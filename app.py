@@ -75,15 +75,28 @@ def get_gemini_testing_advice(sample_name, requirements):
         return f"AI 建议生成失败：{str(e)} {debug_info}"
 
 def send_wxpusher_message(client, sample, requirements, advice):
-    """调用 WxPusher 给您的微信发送消息，并返回发送结果状态"""
+    """调用 WxPusher 给您的微信发送完整、带排版的消息"""
     url = "https://wxpusher.zjiecode.com/api/send/message"
-    content = f"🔔【新样品到达】\n客户：{client}\n样品：{sample}\n要求：{requirements}\n\n🤖【AI建议提要】\n{advice[:150]}..."
+    
+    # 1. 移除 [:150] 截断，改为 {advice} 发送完整内容
+    # 2. 增加 Markdown 的加粗语法 (**文字**) 让排版更清晰
+    content = f"""🔔 **【新样品到达】**
+**客户：** {client}
+**样品：** {sample}
+**要求：** {requirements}
+
+---
+
+🤖 **【AI 测试方案建议】**
+
+{advice}
+"""
     
     payload = {
         "appToken": WXPUSHER_APP_TOKEN,
         "content": content,
         "summary": f"新订单: {sample}",
-        "contentType": 1,
+        "contentType": 3,  # 关键修改：将 1 改为 3，启用 Markdown 富文本渲染模式
         "uids": [WXPUSHER_UID]
     }
     
