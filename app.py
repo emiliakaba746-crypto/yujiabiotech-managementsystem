@@ -27,7 +27,8 @@ supabase: Client = init_supabase()
 # ==========================================
 def get_gemini_testing_advice(sample_name, requirements):
     """调用 Gemini API 生成测试安排与方法提示"""
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    # 【修复】将模型从 gemini-1.5-flash 更改为最稳定兼容的 gemini-pro
+    model = genai.GenerativeModel('gemini-pro')
     prompt = f"""
     作为玉佳生物科技的资深实验员，请根据以下样品信息提供测试建议：
     - 样品名称：{sample_name}
@@ -41,7 +42,7 @@ def get_gemini_testing_advice(sample_name, requirements):
         return f"AI 建议生成失败：{str(e)}"
 
 def send_wxpusher_message(client, sample, requirements, advice):
-    """调用 WxPusher 给您的微信发送消息"""
+    """调用 WxPusher 给您的微信发送消息，并返回发送结果状态"""
     url = "https://wxpusher.zjiecode.com/api/send/message"
     content = f"🔔【新样品到达】\n客户：{client}\n样品：{sample}\n要求：{requirements}\n\n🤖【AI建议提要】\n{advice[:150]}..."
     
@@ -52,8 +53,17 @@ def send_wxpusher_message(client, sample, requirements, advice):
         "contentType": 1,
         "uids": [WXPUSHER_UID]
     }
-    response = requests.post(url, json=payload)
-    return response.json()
+    
+    try:
+        response = requests.post(url, json=payload)
+        result = response.json()
+        # WxPusher 官方文档中，code为1000代表发送成功
+        if result.get("code") == 1000:
+            return True, "发送成功"
+        else:
+            return False, result.get("msg", "未知错误")
+    except Exception as e:
+        return False, f"网络请求错误: {str(e)}"
 
 # ==========================================
 # 3. Streamlit 界面路由
@@ -95,11 +105,17 @@ if menu == "业务接单大厅":
                 }
                 
                 try:
+                    # 存入数据库
                     supabase.table("orders").insert(order_data).execute()
-                    # 3. 发送微信推送
-                    send_wxpusher_message(client_name, sample_name, requirements, ai_advice)
                     
-                    st.success(f"✅ 订单创建成功！数据已入库，并已推送到您的微信。")
+                    # 3. 发送微信推送 (增加状态判断)
+                    wx_success, wx_msg = send_wxpusher_message(client_name, sample_name, requirements, ai_advice)
+                    
+                    if wx_success:
+                        st.success("✅ 订单创建成功！数据已入库，并已成功推送到您的微信。")
+                    else:
+                        st.warning(f"⚠️ 订单数据已入库，但微信推送失败。WxPusher提示：{wx_msg}（请确保您已微信扫码关注了 WxPusher 后台的'应用关注二维码'）")
+                        
                     with st.expander("查看 AI 生成的初始测试方案"):
                         st.write(ai_advice)
                 except Exception as e:
@@ -110,7 +126,6 @@ elif menu == "实验室检测看板":
     st.header("🔬 实验室样品处理")
     
     try:
-        # 读取数据库中状态不是 Completed 的订单
         response = supabase.table("orders").select("*").neq("status", "Completed").order("id", desc=True).execute()
         orders = response.data
         
