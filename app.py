@@ -78,8 +78,7 @@ def send_wxpusher_message(client, sample, requirements, advice):
     """调用 WxPusher 给您的微信发送完整、带排版的消息"""
     url = "https://wxpusher.zjiecode.com/api/send/message"
     
-    # 1. 移除 [:150] 截断，改为 {advice} 发送完整内容
-    # 2. 增加 Markdown 的加粗语法 (**文字**) 让排版更清晰
+    # 增加 Markdown 的加粗语法 (**文字**) 让排版更清晰
     content = f"""🔔 **【新样品到达】**
 **客户：** {client}
 **样品：** {sample}
@@ -96,7 +95,7 @@ def send_wxpusher_message(client, sample, requirements, advice):
         "appToken": WXPUSHER_APP_TOKEN,
         "content": content,
         "summary": f"新订单: {sample}",
-        "contentType": 3,  # 关键修改：将 1 改为 3，启用 Markdown 富文本渲染模式
+        "contentType": 3,  # 启用 Markdown 富文本渲染模式
         "uids": [WXPUSHER_UID]
     }
     
@@ -153,7 +152,7 @@ if menu == "业务接单大厅":
                     # 存入数据库
                     supabase.table("orders").insert(order_data).execute()
                     
-                    # 3. 发送微信推送 (增加状态判断)
+                    # 3. 发送微信推送 
                     wx_success, wx_msg = send_wxpusher_message(client_name, sample_name, requirements, ai_advice)
                     
                     if wx_success:
@@ -195,14 +194,14 @@ elif menu == "实验室检测看板":
             # 3. 状态分页 (Tabs)
             tab1, tab2, tab3 = st.tabs(["🟡 待处理任务", "🔵 检测中任务", "📋 全部待办总览"])
             
-            # 提取卡片渲染逻辑为内部函数，保持代码整洁
-            def render_order_card(order):
+            # 提取卡片渲染逻辑为内部函数，并增加 unique_key_suffix 防止组件冲突
+            def render_order_card(order, unique_key_suffix):
                 # 如果有搜索词，且没匹配上，则跳过渲染
                 if search_query:
                     if search_query.lower() not in order['sample_name'].lower() and search_query.lower() not in order['client_name'].lower():
                         return
                         
-                # 借助 border=True 让信息看起来像一张卡片 (需要 Streamlit >= 1.30)
+                # 借助 border=True 让信息看起来像一张卡片
                 with st.container(border=True):
                     col_a, col_b, col_c = st.columns([2.5, 4, 2])
                     
@@ -218,38 +217,39 @@ elif menu == "实验室检测看板":
                     with col_c:
                         status_options = ["Pending", "Processing", "Completed"]
                         current_idx = status_options.index(order['status']) if order['status'] in status_options else 0
-                        # 更新状态的下拉菜单
+                        
+                        # 更新状态的下拉菜单，绑定唯一后缀 Key
                         new_status = st.selectbox(
                             "阶段变更", 
                             status_options, 
                             index=current_idx, 
-                            key=f"status_{order['id']}",
-                            label_visibility="collapsed" # 隐藏 label 使排版更紧凑
+                            key=f"status_{order['id']}_{unique_key_suffix}", 
+                            label_visibility="collapsed" 
                         )
                         
                         # 状态变更触发更新
                         if new_status != order['status']:
                             supabase.table("orders").update({"status": new_status}).eq("id", order['id']).execute()
-                            st.toast(f"✅ {order['sample_name']} 的状态已更新为 {new_status}！") # 右下角轻提示
+                            st.toast(f"✅ {order['sample_name']} 的状态已更新为 {new_status}！") 
                             st.rerun()
                             
                     with st.expander("🤖 展开查看 AI 测试方案与注意事项"):
                         st.markdown(order.get('ai_advice', '暂无 AI 建议'))
 
-            # 4. 在不同的 Tab 下渲染对应状态的卡片
+            # 4. 在不同的 Tab 下渲染对应状态的卡片，并传入唯一的后缀
             with tab1:
                 for order in orders:
                     if order['status'] == 'Pending':
-                        render_order_card(order)
+                        render_order_card(order, "tab1")
                         
             with tab2:
                 for order in orders:
                     if order['status'] == 'Processing':
-                        render_order_card(order)
+                        render_order_card(order, "tab2")
                         
             with tab3:
                 for order in orders:
-                    render_order_card(order)
+                    render_order_card(order, "tab3")
                     
     except Exception as e:
         st.error(f"加载实验室数据失败，请检查网络或数据库配置: {str(e)}")
