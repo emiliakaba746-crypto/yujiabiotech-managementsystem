@@ -26,7 +26,7 @@ supabase: Client = init_supabase()
 # 2. 核心功能函数
 # ==========================================
 def get_gemini_testing_advice(sample_name, requirements):
-    """调用 Gemini API 生成测试安排与方法提示 (增强容错版)"""
+    """调用 Gemini API 生成测试安排与方法提示 (适配最新模型)"""
     try:
         # 1. 自动探测当前 API Key 支持的模型列表
         available_models = []
@@ -37,15 +37,27 @@ def get_gemini_testing_advice(sample_name, requirements):
         if not available_models:
             return "AI 建议生成失败：您的 API Key 没有访问任何文本生成模型的权限。请确认 Key 是否有效或欠费。"
 
-        # 2. 智能选择模型 (优先 1.5-flash，其次 pro，最后用列表里第一个保底)
-        target_model_name = available_models[0] # 保底
-        if 'models/gemini-1.5-flash' in available_models:
-            target_model_name = 'gemini-1.5-flash'
-        elif 'models/gemini-pro' in available_models:
-            target_model_name = 'gemini-pro'
-        else:
-            # 清理 models/ 前缀适配 SDK
-            target_model_name = target_model_name.replace('models/', '')
+        # 2. 智能选择模型 (针对排错信息中支持的最新模型进行适配)
+        target_model_name = ""
+        
+        # 优先使用官方最新的别名或最新的高版本模型
+        preferred_models = [
+            'models/gemini-flash-latest', 
+            'models/gemini-3.6-flash',
+            'models/gemini-3.5-flash'
+        ]
+        
+        for pref in preferred_models:
+            if pref in available_models:
+                target_model_name = pref
+                break
+                
+        # 如果以上都没有，取列表里的最后一个（通常倒序越靠后的模型越新），避开废弃的2.5
+        if not target_model_name:
+            target_model_name = available_models[-1]
+
+        # 清理 models/ 前缀以适配 SDK 格式
+        target_model_name = target_model_name.replace('models/', '')
 
         # 3. 发起请求
         model = genai.GenerativeModel(target_model_name)
@@ -59,8 +71,7 @@ def get_gemini_testing_advice(sample_name, requirements):
         return response.text
         
     except Exception as e:
-        # 如果再次失败，把获取到的可用模型列表打印出来，方便排查
-        debug_info = f"\n\n[排错信息] 当前 Key 支持的模型有: {available_models}" if 'available_models' in locals() else ""
+        debug_info = f"\n\n[排错信息] 尝试调用的模型: {target_model_name if 'target_model_name' in locals() else '未知'}\n当前 Key 支持的模型有: {available_models}" if 'available_models' in locals() else ""
         return f"AI 建议生成失败：{str(e)} {debug_info}"
 
 def send_wxpusher_message(client, sample, requirements, advice):
@@ -79,7 +90,6 @@ def send_wxpusher_message(client, sample, requirements, advice):
     try:
         response = requests.post(url, json=payload)
         result = response.json()
-        # WxPusher 官方文档中，code为1000代表发送成功
         if result.get("code") == 1000:
             return True, "发送成功"
         else:
@@ -136,9 +146,9 @@ if menu == "业务接单大厅":
                     if wx_success:
                         st.success("✅ 订单创建成功！数据已入库，并已成功推送到您的微信。")
                     else:
-                        st.warning(f"⚠️ 订单数据已入库，但微信推送失败。WxPusher提示：{wx_msg}（请确保您的 appToken 在 Secrets 中填写正确，且微信已扫码关注应用）")
+                        st.warning(f"⚠️ 订单数据已入库，但微信推送失败。WxPusher提示：{wx_msg}")
                         
-                    with st.expander("查看 AI 生成的初始测试方案"):
+                    with st.expander("查看 AI 生成的初始测试方案", expanded=True):
                         st.write(ai_advice)
                 except Exception as e:
                     st.error(f"❌ 数据库保存失败: {str(e)}")
