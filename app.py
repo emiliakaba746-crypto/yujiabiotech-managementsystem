@@ -28,7 +28,6 @@ supabase: Client = init_supabase()
 def get_gemini_testing_advice(sample_name, requirements):
     """调用 Gemini API 生成测试安排与方法提示 (适配最新模型)"""
     try:
-        # 1. 自动探测当前 API Key 支持的模型列表
         available_models = []
         for m in genai.list_models():
             if 'generateContent' in m.supported_generation_methods:
@@ -37,10 +36,7 @@ def get_gemini_testing_advice(sample_name, requirements):
         if not available_models:
             return "AI 建议生成失败：您的 API Key 没有访问任何文本生成模型的权限。请确认 Key 是否有效或欠费。"
 
-        # 2. 智能选择模型 (针对排错信息中支持的最新模型进行适配)
         target_model_name = ""
-        
-        # 优先使用官方最新的别名或最新的高版本模型
         preferred_models = [
             'models/gemini-flash-latest', 
             'models/gemini-3.6-flash',
@@ -52,14 +48,11 @@ def get_gemini_testing_advice(sample_name, requirements):
                 target_model_name = pref
                 break
                 
-        # 如果以上都没有，取列表里的最后一个（通常倒序越靠后的模型越新），避开废弃的2.5
         if not target_model_name:
             target_model_name = available_models[-1]
 
-        # 清理 models/ 前缀以适配 SDK 格式
         target_model_name = target_model_name.replace('models/', '')
 
-        # 3. 发起请求
         model = genai.GenerativeModel(target_model_name)
         prompt = f"""
         作为玉佳生物科技的资深实验员，请根据以下样品信息提供测试建议：
@@ -78,7 +71,6 @@ def send_wxpusher_message(client, sample, requirements, advice):
     """调用 WxPusher 给您的微信发送完整、带排版的消息"""
     url = "https://wxpusher.zjiecode.com/api/send/message"
     
-    # 增加 Markdown 的加粗语法 (**文字**) 让排版更清晰
     content = f"""🔔 **【新样品到达】**
 **客户：** {client}
 **样品：** {sample}
@@ -95,7 +87,7 @@ def send_wxpusher_message(client, sample, requirements, advice):
         "appToken": WXPUSHER_APP_TOKEN,
         "content": content,
         "summary": f"新订单: {sample}",
-        "contentType": 3,  # 启用 Markdown 富文本渲染模式
+        "contentType": 3,  
         "uids": [WXPUSHER_UID]
     }
     
@@ -134,10 +126,8 @@ if menu == "业务接单大厅":
         
         if submitted and client_name and sample_name:
             with st.spinner("正在呼叫 AI 助手并同步数据库..."):
-                # 1. 获取 AI 建议
                 ai_advice = get_gemini_testing_advice(sample_name, requirements)
                 
-                # 2. 存入数据库
                 order_data = {
                     "client_name": client_name,
                     "contact_info": contact_info,
@@ -149,10 +139,7 @@ if menu == "业务接单大厅":
                 }
                 
                 try:
-                    # 存入数据库
                     supabase.table("orders").insert(order_data).execute()
-                    
-                    # 3. 发送微信推送 
                     wx_success, wx_msg = send_wxpusher_message(client_name, sample_name, requirements, ai_advice)
                     
                     if wx_success:
@@ -170,14 +157,12 @@ elif menu == "实验室检测看板":
     st.header("🔬 实验室样品处理看板")
     
     try:
-        # 获取所有未完成的订单
         response = supabase.table("orders").select("*").neq("status", "Completed").order("id", desc=True).execute()
         orders = response.data
         
         if not orders:
             st.success("🎉 太棒了！目前没有积压的待处理样品。")
         else:
-            # 1. 顶部统计概览
             pending_count = sum(1 for o in orders if o['status'] == 'Pending')
             processing_count = sum(1 for o in orders if o['status'] == 'Processing')
             
@@ -188,20 +173,14 @@ elif menu == "实验室检测看板":
             
             st.divider()
             
-            # 2. 搜索功能
             search_query = st.text_input("🔍 搜索样品名称或客户名称快速定位...", "")
-            
-            # 3. 状态分页 (Tabs)
             tab1, tab2, tab3 = st.tabs(["🟡 待处理任务", "🔵 检测中任务", "📋 全部待办总览"])
             
-            # 提取卡片渲染逻辑为内部函数，并增加 unique_key_suffix 防止组件冲突
             def render_order_card(order, unique_key_suffix):
-                # 如果有搜索词，且没匹配上，则跳过渲染
                 if search_query:
                     if search_query.lower() not in order['sample_name'].lower() and search_query.lower() not in order['client_name'].lower():
                         return
                         
-                # 借助 border=True 让信息看起来像一张卡片
                 with st.container(border=True):
                     col_a, col_b, col_c = st.columns([2.5, 4, 2])
                     
@@ -218,7 +197,6 @@ elif menu == "实验室检测看板":
                         status_options = ["Pending", "Processing", "Completed"]
                         current_idx = status_options.index(order['status']) if order['status'] in status_options else 0
                         
-                        # 更新状态的下拉菜单，绑定唯一后缀 Key
                         new_status = st.selectbox(
                             "阶段变更", 
                             status_options, 
@@ -227,16 +205,44 @@ elif menu == "实验室检测看板":
                             label_visibility="collapsed" 
                         )
                         
-                        # 状态变更触发更新
                         if new_status != order['status']:
                             supabase.table("orders").update({"status": new_status}).eq("id", order['id']).execute()
                             st.toast(f"✅ {order['sample_name']} 的状态已更新为 {new_status}！") 
                             st.rerun()
                             
-                    with st.expander("🤖 展开查看 AI 测试方案与注意事项"):
+                    with st.expander("🤖 查看 AI 测试方案与注意事项"):
                         st.markdown(order.get('ai_advice', '暂无 AI 建议'))
+                        
+                    # 【核心新增】：数据上传与备注折叠面板
+                    with st.expander("📤 上传检测结果 & 填写实验备注"):
+                        col_u1, col_u2 = st.columns(2)
+                        with col_u1:
+                            lab_remarks = st.text_area(
+                                "📝 实验结论 / 数据备注", 
+                                value=order.get('lab_remarks', '') if order.get('lab_remarks') else '', 
+                                placeholder="例如：A260/280比值为1.85，纯度合格...",
+                                key=f"remark_{order['id']}_{unique_key_suffix}"
+                            )
+                        with col_u2:
+                            uploaded_file = st.file_uploader(
+                                "📁 上传原始数据 / 报告文件", 
+                                type=['xlsx', 'csv', 'pdf', 'doc', 'docx', 'jpg'], 
+                                key=f"file_{order['id']}_{unique_key_suffix}"
+                            )
+                            if order.get('data_file_name'):
+                                st.caption(f"上次已登记文件: `{order['data_file_name']}`")
 
-            # 4. 在不同的 Tab 下渲染对应状态的卡片，并传入唯一的后缀
+                        if st.button("💾 保存实验数据与备注", key=f"save_{order['id']}_{unique_key_suffix}"):
+                            try:
+                                update_data = {"lab_remarks": lab_remarks}
+                                if uploaded_file:
+                                    update_data["data_file_name"] = uploaded_file.name
+                                    
+                                supabase.table("orders").update(update_data).eq("id", order['id']).execute()
+                                st.success("✅ 实验记录保存成功！")
+                            except Exception as e:
+                                st.error(f"❌ 保存失败，详细报错：{str(e)}")
+
             with tab1:
                 for order in orders:
                     if order['status'] == 'Pending':
