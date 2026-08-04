@@ -155,34 +155,91 @@ if menu == "业务接单大厅":
 
 # --- 模块 2：实验室检测看板 ---
 elif menu == "实验室检测看板":
-    st.header("🔬 实验室样品处理")
+    st.header("🔬 实验室样品处理看板")
     
     try:
+        # 获取所有未完成的订单
         response = supabase.table("orders").select("*").neq("status", "Completed").order("id", desc=True).execute()
         orders = response.data
         
         if not orders:
-            st.info("目前没有待处理的样品。")
+            st.success("🎉 太棒了！目前没有积压的待处理样品。")
         else:
-            for order in orders:
-                with st.container():
-                    col_a, col_b, col_c = st.columns([2, 5, 2])
-                    col_a.markdown(f"**样品：{order['sample_name']}**\n\n客户：{order['client_name']}")
-                    col_b.markdown(f"**要求：** {order['requirements']}")
+            # 1. 顶部统计概览
+            pending_count = sum(1 for o in orders if o['status'] == 'Pending')
+            processing_count = sum(1 for o in orders if o['status'] == 'Processing')
+            
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("总待办任务", len(orders))
+            col2.metric("🟡 待处理 (Pending)", pending_count)
+            col3.metric("🔵 检测中 (Processing)", processing_count)
+            
+            st.divider()
+            
+            # 2. 搜索功能
+            search_query = st.text_input("🔍 搜索样品名称或客户名称快速定位...", "")
+            
+            # 3. 状态分页 (Tabs)
+            tab1, tab2, tab3 = st.tabs(["🟡 待处理任务", "🔵 检测中任务", "📋 全部待办总览"])
+            
+            # 提取卡片渲染逻辑为内部函数，保持代码整洁
+            def render_order_card(order):
+                # 如果有搜索词，且没匹配上，则跳过渲染
+                if search_query:
+                    if search_query.lower() not in order['sample_name'].lower() and search_query.lower() not in order['client_name'].lower():
+                        return
+                        
+                # 借助 border=True 让信息看起来像一张卡片 (需要 Streamlit >= 1.30)
+                with st.container(border=True):
+                    col_a, col_b, col_c = st.columns([2.5, 4, 2])
                     
-                    status_options = ["Pending", "Processing", "Completed"]
-                    current_idx = status_options.index(order['status']) if order['status'] in status_options else 0
-                    new_status = col_c.selectbox("状态", status_options, index=current_idx, key=f"status_{order['id']}")
+                    with col_a:
+                        st.markdown(f"**🧪 {order['sample_name']}**")
+                        st.caption(f"**客户：** {order['client_name']}")
+                        st.caption(f"**到样日期：** {order.get('arrival_date', '未知')}")
+                        
+                    with col_b:
+                        st.markdown("**测试要求：**")
+                        st.info(order['requirements'])
+                        
+                    with col_c:
+                        status_options = ["Pending", "Processing", "Completed"]
+                        current_idx = status_options.index(order['status']) if order['status'] in status_options else 0
+                        # 更新状态的下拉菜单
+                        new_status = st.selectbox(
+                            "阶段变更", 
+                            status_options, 
+                            index=current_idx, 
+                            key=f"status_{order['id']}",
+                            label_visibility="collapsed" # 隐藏 label 使排版更紧凑
+                        )
+                        
+                        # 状态变更触发更新
+                        if new_status != order['status']:
+                            supabase.table("orders").update({"status": new_status}).eq("id", order['id']).execute()
+                            st.toast(f"✅ {order['sample_name']} 的状态已更新为 {new_status}！") # 右下角轻提示
+                            st.rerun()
+                            
+                    with st.expander("🤖 展开查看 AI 测试方案与注意事项"):
+                        st.markdown(order.get('ai_advice', '暂无 AI 建议'))
+
+            # 4. 在不同的 Tab 下渲染对应状态的卡片
+            with tab1:
+                for order in orders:
+                    if order['status'] == 'Pending':
+                        render_order_card(order)
+                        
+            with tab2:
+                for order in orders:
+                    if order['status'] == 'Processing':
+                        render_order_card(order)
+                        
+            with tab3:
+                for order in orders:
+                    render_order_card(order)
                     
-                    if new_status != order['status']:
-                        supabase.table("orders").update({"status": new_status}).eq("id", order['id']).execute()
-                        st.rerun()
-                    
-                with st.expander("🤖 查看 AI 测试方案建议"):
-                    st.markdown(order.get('ai_advice', '无'))
-                st.divider()
     except Exception as e:
-        st.error(f"加载数据失败: {str(e)}")
+        st.error(f"加载实验室数据失败，请检查网络或数据库配置: {str(e)}")
 
 # --- 模块 3：财务核对中心 ---
 elif menu == "财务核对中心":
