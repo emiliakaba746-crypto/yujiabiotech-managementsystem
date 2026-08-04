@@ -1,14 +1,30 @@
 import streamlit as st
 import requests
 import google.generativeai as genai
+from supabase import create_client, Client
 
 # ==========================================
-# 1. API 配置与工具函数
+# 1. 安全读取配置与初始化
 # ==========================================
+GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+WXPUSHER_UID = st.secrets["WXPUSHER_UID"]
+WXPUSHER_APP_TOKEN = st.secrets["WXPUSHER_APP_TOKEN"]
 
-# 配置 Gemini API
-genai.configure(api_key="您的_GEMINI_API_KEY")
+# 初始化 Gemini API
+genai.configure(api_key=GEMINI_API_KEY)
 
+# 初始化 Supabase 数据库连接
+@st.cache_resource
+def init_supabase():
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
+
+supabase: Client = init_supabase()
+
+# ==========================================
+# 2. 核心功能函数
+# ==========================================
 def get_gemini_testing_advice(sample_name, requirements):
     """调用 Gemini API 生成测试安排与方法提示"""
     model = genai.GenerativeModel('gemini-1.5-flash')
@@ -16,34 +32,32 @@ def get_gemini_testing_advice(sample_name, requirements):
     作为玉佳生物科技的资深实验员，请根据以下样品信息提供测试建议：
     - 样品名称：{sample_name}
     - 客户测试要求：{requirements}
-    
-    请提供：
-    1. 推荐的测试方法（标准方法或业内通用做法）
-    2. 具体的测试流程与安排建议
-    3. 样品的保存条件及实验安全注意事项
+    请提供：1.推荐的测试方法 2.具体的测试流程 3.样品的保存条件及注意事项。
     """
-    response = model.generate_content(prompt)
-    return response.text
+    try:
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return f"AI 建议生成失败：{str(e)}"
 
-def send_wxpusher_group_msg(client, sample, requirements, advice):
-    """调用 WxPusher 向微信群发送新样品通知"""
+def send_wxpusher_message(client, sample, requirements, advice):
+    """调用 WxPusher 给您的微信发送消息"""
     url = "https://wxpusher.zjiecode.com/api/send/message"
-    content = f"🔔【玉佳生物 - 新样品到达】\n\n客户：{client}\n样品：{sample}\n要求：{requirements}\n\n🤖【AI 测试建议提要】\n{advice[:100]}..."
+    content = f"🔔【新样品到达】\n客户：{client}\n样品：{sample}\n要求：{requirements}\n\n🤖【AI建议提要】\n{advice[:150]}..."
     
     payload = {
-        "appToken": "您的_WXPUSHER_APP_TOKEN",
+        "appToken": WXPUSHER_APP_TOKEN,
         "content": content,
-        "summary": f"新样品: {sample}",
-        "contentType": 1, 
-        "topicIds": [12345],  # 替换为您的 WxPusher 群组 Topic ID
+        "summary": f"新订单: {sample}",
+        "contentType": 1,
+        "uids": [WXPUSHER_UID]
     }
-    # requests.post(url, json=payload) # 生产环境取消注释
-    return True
+    response = requests.post(url, json=payload)
+    return response.json()
 
 # ==========================================
-# 2. Streamlit 界面路由与功能实现
+# 3. Streamlit 界面路由
 # ==========================================
-
 st.set_page_config(page_title="玉佳生物订单系统", layout="wide")
 st.sidebar.title("🧬 玉佳生物科技")
 menu = st.sidebar.radio("工作台导航", ["业务接单大厅", "实验室检测看板", "财务核对中心"])
@@ -65,63 +79,85 @@ if menu == "业务接单大厅":
         submitted = st.form_submit_button("生成订单 & 通知实验室")
         
         if submitted and client_name and sample_name:
-            with st.spinner("正在呼叫 AI 助手生成测试方案..."):
+            with st.spinner("正在呼叫 AI 助手并同步数据库..."):
                 # 1. 获取 AI 建议
                 ai_advice = get_gemini_testing_advice(sample_name, requirements)
                 
-                # 2. 发送微信推送
-                send_wxpusher_group_msg(client_name, sample_name, requirements, ai_advice)
+                # 2. 存入数据库
+                order_data = {
+                    "client_name": client_name,
+                    "contact_info": contact_info,
+                    "sample_name": sample_name,
+                    "arrival_date": str(arrival_date),
+                    "requirements": requirements,
+                    "ai_advice": ai_advice,
+                    "status": "Pending"
+                }
                 
-                # 3. 存入数据库 (此处需连接 SQLite 或 MySQL)
-                # db.save_order(...) 
-                
-                st.success(f"✅ 订单已创建！微信群已通知。样品分配给：{client_name}")
-                with st.expander("查看 AI 生成的初始测试方案"):
-                    st.write(ai_advice)
+                try:
+                    supabase.table("orders").insert(order_data).execute()
+                    # 3. 发送微信推送
+                    send_wxpusher_message(client_name, sample_name, requirements, ai_advice)
+                    
+                    st.success(f"✅ 订单创建成功！数据已入库，并已推送到您的微信。")
+                    with st.expander("查看 AI 生成的初始测试方案"):
+                        st.write(ai_advice)
+                except Exception as e:
+                    st.error(f"❌ 数据库保存失败: {str(e)}")
 
 # --- 模块 2：实验室检测看板 ---
 elif menu == "实验室检测看板":
     st.header("🔬 实验室样品处理")
     
-    # 模拟从数据库提取的待处理订单
-    st.info("以下为待处理样品。点击展开可查看详情与 AI 测试指南。")
-    
-    # 样品卡片设计，让检测人员一目了然
-    with st.container():
-        col_a, col_b, col_c = st.columns([2, 5, 2])
-        col_a.markdown("**样品：高纯度质粒 DNA**\n\n客户：王教授团队")
-        col_b.markdown("**要求：** 浓度测定及纯度检测 (A260/A280)")
+    try:
+        # 读取数据库中状态不是 Completed 的订单
+        response = supabase.table("orders").select("*").neq("status", "Completed").order("id", desc=True).execute()
+        orders = response.data
         
-        status = col_c.selectbox("状态更新", ["待处理 (Pending)", "检测中 (Processing)", "已完成 (Completed)"], key="status_1")
-        
-    with st.expander("🤖 查看 Gemini 测试方案建议与方法"):
-        st.markdown("""
-        **1. 推荐测试方法：** 使用 Nanodrop 紫外分光光度计进行吸光度测定。
-        **2. 流程安排：** 样品需先在 4°C 融化。先用对应的洗脱缓冲液进行空白校准，再取 1-2 μL 样品进行测量。
-        **3. 注意事项：** 确保 A260/A280 比值在 1.8 左右以确认无蛋白质污染。
-        """)
+        if not orders:
+            st.info("目前没有待处理的样品。")
+        else:
+            for order in orders:
+                with st.container():
+                    col_a, col_b, col_c = st.columns([2, 5, 2])
+                    col_a.markdown(f"**样品：{order['sample_name']}**\n\n客户：{order['client_name']}")
+                    col_b.markdown(f"**要求：** {order['requirements']}")
+                    
+                    status_options = ["Pending", "Processing", "Completed"]
+                    current_idx = status_options.index(order['status']) if order['status'] in status_options else 0
+                    new_status = col_c.selectbox("状态", status_options, index=current_idx, key=f"status_{order['id']}")
+                    
+                    if new_status != order['status']:
+                        supabase.table("orders").update({"status": new_status}).eq("id", order['id']).execute()
+                        st.rerun()
+                    
+                with st.expander("🤖 查看 AI 测试方案建议"):
+                    st.markdown(order.get('ai_advice', '无'))
+                st.divider()
+    except Exception as e:
+        st.error(f"加载数据失败: {str(e)}")
 
 # --- 模块 3：财务核对中心 ---
 elif menu == "财务核对中心":
     st.header("💰 账单与开票管理")
+    st.write("此处显示已完工 (Completed) 的订单。")
     
-    st.write("筛选 **已完成** 测试的订单进行结算。")
-    
-    # 模拟财务核对行
-    st.markdown("### 订单号：YJ-202310-001 (已完工)")
-    st.markdown("**客户：** 王教授团队 | **样品：** 高纯度质粒 DNA | **费用核定：** ¥ 850.00")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        invoice_file = st.file_uploader("上传发票副本 (PDF/JPG)", type=['pdf', 'jpg', 'png'])
-        if invoice_file:
-            st.success("发票上传成功")
-            
-    with col2:
-        manifest_file = st.file_uploader("上传最终测试清单 (PDF/Excel)", type=['pdf', 'xlsx'])
-        if manifest_file:
-            st.success("测试清单上传成功")
-            
-    if st.button("核对无误，归档订单"):
-        st.balloons()
-        st.success("订单流转结束，已封存入库！")
+    try:
+        response = supabase.table("orders").select("*").eq("status", "Completed").order("id", desc=True).execute()
+        orders = response.data
+        
+        if not orders:
+            st.info("目前没有待结算的完工订单。")
+        else:
+            for order in orders:
+                st.markdown(f"### 订单号：YJ-2026-{order['id']} (已完工)")
+                st.markdown(f"**客户：** {order['client_name']} | **样品：** {order['sample_name']}")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.file_uploader(f"上传发票 (订单 {order['id']})", type=['pdf', 'jpg', 'png'], key=f"inv_{order['id']}")
+                with col2:
+                    st.file_uploader(f"上传测试清单 (订单 {order['id']})", type=['pdf', 'xlsx'], key=f"man_{order['id']}")
+                st.divider()
+    except Exception as e:
+        st.error(f"加载数据失败: {str(e)}")
