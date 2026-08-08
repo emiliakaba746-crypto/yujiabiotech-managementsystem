@@ -175,7 +175,6 @@ if menu == "业务接单大厅":
                 
             st.markdown("---")
             
-            # 【核心修改点】：定义规范的测试要求模板，并作为默认值注入文本框
             req_template = """一、 样品基本信息
 样品名称： XXX（例如：水质样本、铝合金铸件、土壤）
 样品数量/体积/重量： X 个 / X ml / X g
@@ -217,7 +216,6 @@ if menu == "业务接单大厅":
 样品危险性声明：这是所有正规实验室的强制要求，保护测试人员的人身安全。
 精度/检出限要求：同一种元素有不同的测试方法（比如测微量元素用ICP-MS，测常量元素用滴定或ICP-OES），明确您需要的精度能帮实验室匹配最经济、准确的仪器。"""
             
-            # 使用 value 参数加载模板，调高 height 以适应长文本
             requirements = st.text_area("详细测试要求 (请直接在下方模板修改/填写相应的 XXX 与 [ ])", value=req_template, height=450)
             
             submitted = st.form_submit_button("生成订单 & 通知实验室")
@@ -293,7 +291,6 @@ elif menu == "实验室检测看板":
                         st.caption(f"到样：{order.get('arrival_date', '未知')} | 接单员：**{order.get('creator_name', '未知')}**")
                     with col_b:
                         st.markdown("**测试要求：**")
-                        # 因为模板文本可能较长，使用高度自适应的 info 框展示
                         st.info(order['requirements'])
                     with col_c:
                         status_opts = ["Pending", "Processing", "Completed"]
@@ -388,19 +385,27 @@ elif menu == "财务核对中心":
         col3.metric("⏳ 待收尾款总额", f"¥ {uncollected_revenue:,.2f}")
         
         st.divider()
-        st.write("### 待结算 / 已完工订单清单")
         
-        completed_orders = [o for o in all_orders if o.get('status') == 'Completed']
+        # 【修改点】：不再过滤完成状态，显示所有订单，并提供搜索功能
+        st.write("### 🧾 订单财务明细清单 (全部订单)")
         
-        if not completed_orders:
-            st.info("目前没有已完工的订单。")
+        fin_search = st.text_input("🔍 搜索客户名称快速定位...", key="fin_search")
+        
+        filtered_orders = all_orders
+        if fin_search:
+            filtered_orders = [o for o in all_orders if fin_search.lower() in o.get('client_name', '').lower() or fin_search.lower() in o.get('sample_name', '').lower()]
+            
+        if not filtered_orders:
+            st.info("暂无订单数据。")
         else:
-            for order in completed_orders:
+            status_map = {"Pending": "🟡 待处理", "Processing": "🔵 检测中", "Completed": "🟢 已完工"}
+            for order in filtered_orders:
                 with st.container(border=True):
                     display_order_no = f"YJ-{order['id']:05d}"
                     balance = order.get('amount', 0) - order.get('deposit', 0)
+                    current_status = status_map.get(order.get('status', ''), "未知")
                     
-                    st.markdown(f"**订单号：{display_order_no}** | 客户：{order['client_name']} | 样品：{order['sample_name']} | 接单员：{order.get('creator_name', '未知')}")
+                    st.markdown(f"**订单号：{display_order_no}** | 客户：{order['client_name']} | 样品：{order['sample_name']} | 接单员：{order.get('creator_name', '未知')} | 进度：**{current_status}**")
                     st.markdown(f"**订单总计：** ¥ {order.get('amount', 0)} | **已付定金：** ¥ {order.get('deposit', 0)} | **待收尾款：** <font color='red'>**¥ {balance}**</font>", unsafe_allow_html=True)
                     
                     c1, c2, c3 = st.columns(3)
