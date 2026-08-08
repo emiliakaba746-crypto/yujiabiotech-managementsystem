@@ -148,7 +148,7 @@ if menu == "业务接单大厅":
                 contact_info = st.text_input("联系方式 (手机/微信)")
                 amount = st.number_input("订单金额 (元)", min_value=0.0, value=0.0, step=100.0) 
             with col2:
-                sample_name = st.text_input("样品名称 / 编号")
+                sample_name = st.text_input("样品名称")
                 arrival_date = st.date_input("到样日期")
                 
             requirements = st.text_area("详细测试要求")
