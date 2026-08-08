@@ -16,7 +16,7 @@ SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 WXPUSHER_UID = st.secrets.get("WXPUSHER_UID", "")
 WXPUSHER_APP_TOKEN = st.secrets.get("WXPUSHER_APP_TOKEN", "")
-WECHAT_WEBHOOK = st.secrets.get("WECHAT_WEBHOOK", "") 
+WECHAT_WEBHOOK = st.secrets.get("WECHAT_WEBHOOK", "")
 
 genai.configure(api_key=GEMINI_API_KEY)
 
@@ -62,6 +62,7 @@ if st.session_state.current_user is None:
             if st.button("登 录", type="primary", use_container_width=True):
                 if emp_id in USERS:
                     try:
+                        # 增加 Supabase 查询的超时保护，防止网络卡顿
                         res = supabase.table("employees").select("*").eq("emp_id", emp_id).execute()
                         
                         if not res.data:
@@ -88,9 +89,10 @@ if st.session_state.current_user is None:
 user = st.session_state.current_user
 
 # ==========================================
-# 4. 核心功能函数
+# 4. 核心功能函数 (加入超时防护 Timeout)
 # ==========================================
 def get_gemini_testing_advice(sample_name, requirements):
+    """【升级】加入 request_options 限制，防止 AI 服务器响应过慢卡死网页"""
     try:
         available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
         if not available_models: return "AI 建议生成失败：API Key 权限异常。"
@@ -101,15 +103,18 @@ def get_gemini_testing_advice(sample_name, requirements):
                 target_model_name = pref; break
         if not target_model_name: target_model_name = available_models[-1]
         target_model_name = target_model_name.replace('models/', '')
-        model = genai.GenerativeModel(target_model_name)
         
+        model = genai.GenerativeModel(target_model_name)
         prompt = f"""作为玉佳生物科技的资深实验员，请根据以下信息提供建议：样品：{sample_name} 要求：{requirements}。请提供：1.测试方法 2.测试流程 3.保存条件。"""
-        response = model.generate_content(prompt)
+        
+        # 强制 AI 最多响应 15 秒，否则跳过
+        response = model.generate_content(prompt, request_options={"timeout": 15})
         return response.text
     except Exception as e:
-        return f"AI 建议生成失败：{str(e)}"
+        return f"AI 建议生成因网络或限流失败，已跳过。错误详情：{str(e)}"
 
 def send_new_order_notifications(order_no, client, sample, requirements, advice, amount, creator):
+    """【升级】加入 timeout=5 限制，防止微信服务器无响应导致卡死"""
     content = f"""🔔 **【新样品到达】**
 > **订单编号：** <font color="info">{order_no}</font>
 > **接单员：** {creator}
@@ -135,13 +140,13 @@ def send_new_order_notifications(order_no, client, sample, requirements, advice,
             "uids": [uid.strip() for uid in WXPUSHER_UID.split(",") if uid.strip()]
         }
         try:
-            res_wx = requests.post(wx_url, json=payload_wx)
+            res_wx = requests.post(wx_url, json=payload_wx, timeout=5) # 限制 5 秒超时
             if res_wx.json().get("code") == 1000:
                 results.append("✅ 个人微信成功")
             else:
                 results.append(f"❌ 个人微信失败")
-        except:
-            results.append("❌ 个人微信网络错误")
+        except Exception as e:
+            results.append(f"❌ 个人微信网络超时 ({str(e)})")
     else:
         results.append("⚠️ WxPusher未配置")
 
@@ -155,15 +160,15 @@ def send_new_order_notifications(order_no, client, sample, requirements, advice,
         }
         headers = {'Content-Type': 'application/json'}
         try:
-            res_wecom = requests.post(WECHAT_WEBHOOK, json=payload_wecom, headers=headers)
+            res_wecom = requests.post(WECHAT_WEBHOOK, json=payload_wecom, headers=headers, timeout=5) # 限制 5 秒超时
             if res_wecom.status_code == 200:
                 results.append("✅ 企微群成功")
             else:
                 results.append(f"❌ 企微群失败(错误码:{res_wecom.status_code})")
         except Exception as e:
-            results.append(f"❌ 企微网络错误: {str(e)}")
+            results.append(f"❌ 企微网络超时 ({str(e)})")
     else:
-        results.append("⚠️ 企业微信Webhook未配置 (请检查 Streamlit Secrets)")
+        results.append("⚠️ 企微Webhook未配置")
 
     return True, " | ".join(results)
 
@@ -201,9 +206,11 @@ if menu == "业务接单大厅":
             submitted = st.form_submit_button("生成订单 & 通知实验室")
             
             if submitted and client_name and sample_name:
-                with st.spinner("正在呼叫 AI 助手并同步数据库..."):
+                with st.spinner("正在呼叫 AI 助手并同步数据库，请稍候 (最长预计 15 秒)..."):
+                    # 1. 尝试获取 AI 建议
                     ai_advice = get_gemini_testing_advice(sample_name, requirements)
                     
+                    # 2. 组织入库数据
                     order_data = {
                         "client_name": client_name, "contact_info": contact_info, "sample_name": sample_name,
                         "arrival_date": str(arrival_date), "requirements": requirements, "ai_advice": ai_advice,
@@ -211,20 +218,24 @@ if menu == "业务接单大厅":
                         "creator_name": user["name"] 
                     }
                     try:
+                        # 3. 存入数据库
                         res = supabase.table("orders").insert(order_data).execute()
-                        inserted_id = res.data[0]['id']
-                        auto_order_no = f"YJ-{inserted_id:05d}"
-                        
-                        _, push_msg = send_new_order_notifications(auto_order_no, client_name, sample_name, requirements, ai_advice, amount, user["name"])
-                        
-                        st.success(f"✅ 订单创建成功！编号：**{auto_order_no}**")
-                        # 将推送结果用显著的信息框展示出来，方便查错
-                        st.info(f"推送诊断报告: {push_msg}")
-                        
-                        with st.expander("查看 AI 生成的初始测试方案", expanded=True):
-                            st.write(ai_advice)
+                        if res.data and len(res.data) > 0:
+                            inserted_id = res.data[0]['id']
+                            auto_order_no = f"YJ-{inserted_id:05d}"
+                            
+                            # 4. 推送消息
+                            _, push_msg = send_new_order_notifications(auto_order_no, client_name, sample_name, requirements, ai_advice, amount, user["name"])
+                            
+                            st.success(f"✅ 订单创建成功！系统编号：**{auto_order_no}**")
+                            st.info(f"推送诊断报告: {push_msg}")
+                            
+                            with st.expander("查看 AI 生成的初始测试方案", expanded=True):
+                                st.write(ai_advice)
+                        else:
+                            st.error("❌ 数据库保存失败：无法获取返回记录，请检查 Supabase 权限。")
                     except Exception as e:
-                        st.error(f"❌ 数据库保存失败: {str(e)}")
+                        st.error(f"❌ 数据库保存遭遇异常: {str(e)}")
 
 # --- 模块 2：实验室检测看板 ---
 elif menu == "实验室检测看板":
