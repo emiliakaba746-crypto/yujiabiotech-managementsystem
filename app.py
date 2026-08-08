@@ -14,8 +14,6 @@ st.set_page_config(page_title="玉佳生物订单系统", layout="wide")
 GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
-WXPUSHER_UID = st.secrets.get("WXPUSHER_UID", "")
-WXPUSHER_APP_TOKEN = st.secrets.get("WXPUSHER_APP_TOKEN", "")
 WECHAT_WEBHOOK = st.secrets.get("WECHAT_WEBHOOK", "")
 
 genai.configure(api_key=GEMINI_API_KEY)
@@ -63,7 +61,6 @@ if st.session_state.current_user is None:
                 if emp_id in USERS:
                     try:
                         res = supabase.table("employees").select("*").eq("emp_id", emp_id).execute()
-                        
                         if not res.data:
                             if len(password) < 4:
                                 st.warning("⚠️ 这是您的首次登录，请设置一个至少 4 位的密码！")
@@ -78,11 +75,11 @@ if st.session_state.current_user is None:
                                 st.session_state.current_user = USERS[emp_id]
                                 st.rerun()
                             else:
-                                st.error("❌ 密码错误，请重新输入！(若忘记密码请联系管理员重置)")
+                                st.error("❌ 密码错误，请重新输入！")
                     except Exception as e:
-                        st.error(f"数据库连接异常，请确保 supabase 中已创建 employees 表: {str(e)}")
+                        st.error(f"数据库连接异常: {str(e)}")
                 else:
-                    st.error("❌ 工号不存在，请检查系统配置！")
+                    st.error("❌ 工号不存在！")
     st.stop()
 
 user = st.session_state.current_user
@@ -104,20 +101,20 @@ def get_gemini_testing_advice(sample_name, requirements):
         
         model = genai.GenerativeModel(target_model_name)
         prompt = f"""作为玉佳生物科技的资深实验员，请根据以下信息提供建议：样品：{sample_name} 要求：{requirements}。请提供：1.测试方法 2.测试流程 3.保存条件。"""
-        
-        # 强制 AI 最多响应 15 秒
-        response = model.generate_content(prompt, request_options={"timeout": 15})
+        response = model.generate_content(prompt, request_options={"timeout": 10})
         return response.text
     except Exception as e:
-        return f"AI 建议生成因网络或限流失败，已跳过。错误详情：{str(e)}"
+        return f"AI 建议生成因网络或限流已跳过。"
 
-def send_new_order_notifications(order_no, client, sample, requirements, advice, amount, creator):
+# 【更新】：推送消息加入定金和尾款显示
+def send_new_order_notifications(order_no, client, sample, requirements, advice, amount, deposit, creator):
+    balance = amount - deposit
     content = f"""🔔 **【新样品到达】**
 > **订单编号：** <font color="info">{order_no}</font>
 > **接单员：** {creator}
 > **客户：** {client}
 > **样品：** {sample}
-> **金额：** <font color="warning">¥{amount}</font>
+> **财务状态：** 订单总额 ¥{amount} (已付定金 ¥{deposit} | 待收尾款 <font color="warning">¥{balance}</font>)
 > **要求：** {requirements}
 
 ---
@@ -125,54 +122,28 @@ def send_new_order_notifications(order_no, client, sample, requirements, advice,
 <font color="comment">{advice}</font>
 """
     results = []
-
-    # 1. 路径 A: 推送到 WxPusher
-    if WXPUSHER_APP_TOKEN and WXPUSHER_UID:
-        wx_url = "https://wxpusher.zjiecode.com/api/send/message"
-        payload_wx = {
-            "appToken": WXPUSHER_APP_TOKEN,
-            "content": content,
-            "summary": f"新接单: {order_no}",
-            "contentType": 3,
-            "uids": [uid.strip() for uid in WXPUSHER_UID.split(",") if uid.strip()]
-        }
-        try:
-            # 【修复点】: 将超时时间放宽至 15 秒，适应跨国网络波动
-            res_wx = requests.post(wx_url, json=payload_wx, timeout=15)
-            if res_wx.json().get("code") == 1000:
-                results.append("✅ 个人微信成功")
-            else:
-                results.append(f"❌ 个人微信失败")
-        except Exception as e:
-            results.append(f"❌ 个人微信网络超时 ({str(e)})")
-    else:
-        results.append("⚠️ WxPusher未配置")
-
-    # 2. 路径 B: 推送到企业微信
+    
     if WECHAT_WEBHOOK:
         payload_wecom = {
             "msgtype": "markdown",
-            "markdown": {
-                "content": content
-            }
+            "markdown": {"content": content}
         }
         headers = {'Content-Type': 'application/json'}
         try:
-            # 同样将企微超时时间放宽至 15 秒
-            res_wecom = requests.post(WECHAT_WEBHOOK, json=payload_wecom, headers=headers, timeout=15)
+            res_wecom = requests.post(WECHAT_WEBHOOK, json=payload_wecom, headers=headers, timeout=5)
             if res_wecom.status_code == 200:
-                results.append("✅ 企微群成功")
+                results.append("✅ 企业微信群通知已发送")
             else:
-                results.append(f"❌ 企微群失败(错误码:{res_wecom.status_code})")
+                results.append(f"❌ 企微群失败(码:{res_wecom.status_code})")
         except Exception as e:
-            results.append(f"❌ 企微网络超时 ({str(e)})")
+            results.append(f"❌ 企微网络超时")
     else:
-        results.append("⚠️ 企微Webhook未配置")
+        results.append("⚠️ 企业微信机器人未配置")
 
     return True, " | ".join(results)
 
 # ==========================================
-# 5. Streamlit 界面路由与侧边栏
+# 5. Streamlit 界面路由
 # ==========================================
 st.sidebar.title("🧬 玉佳生物科技")
 st.sidebar.markdown(f"👋 **欢迎, {user['name']}**")
@@ -189,48 +160,55 @@ if menu == "业务接单大厅":
     st.header("📝 客户与样品录入")
     
     if "create_order" not in user["actions"]:
-        st.info("💡 您的权限级别为【只读】。您可以看到数据盘面，但无权在此录入新订单。")
+        st.info("💡 您的权限级别为【只读】。无权在此录入新订单。")
     else:
         with st.form("order_form", clear_on_submit=True):
             col1, col2 = st.columns(2)
             with col1:
                 client_name = st.text_input("客户名称 / 公司")
                 contact_info = st.text_input("联系方式 (手机/微信)")
-                amount = st.number_input("订单金额 (元)", min_value=0.0, value=0.0, step=100.0) 
+                # 【新增】：定金输入框
+                st.markdown("---")
+                amount = st.number_input("💰 订单总金额 (元)", min_value=0.0, value=0.0, step=100.0)
+                deposit = st.number_input("💵 已付定金金额 (元)", min_value=0.0, value=0.0, step=100.0)
             with col2:
                 sample_name = st.text_input("样品名称 (系统将自动生成订单编号)")
                 arrival_date = st.date_input("到样日期")
                 
+            st.markdown("---")
             requirements = st.text_area("详细测试要求")
             submitted = st.form_submit_button("生成订单 & 通知实验室")
             
             if submitted and client_name and sample_name:
-                with st.spinner("正在呼叫 AI 助手并同步数据库，请稍候..."):
-                    ai_advice = get_gemini_testing_advice(sample_name, requirements)
-                    
-                    order_data = {
-                        "client_name": client_name, "contact_info": contact_info, "sample_name": sample_name,
-                        "arrival_date": str(arrival_date), "requirements": requirements, "ai_advice": ai_advice,
-                        "status": "Pending", "amount": amount, "is_paid": False, "has_test_list": False, "has_invoice": False,
-                        "creator_name": user["name"] 
-                    }
-                    try:
-                        res = supabase.table("orders").insert(order_data).execute()
-                        if res.data and len(res.data) > 0:
-                            inserted_id = res.data[0]['id']
-                            auto_order_no = f"YJ-{inserted_id:05d}"
-                            
-                            _, push_msg = send_new_order_notifications(auto_order_no, client_name, sample_name, requirements, ai_advice, amount, user["name"])
-                            
-                            st.success(f"✅ 订单创建成功！系统编号：**{auto_order_no}**")
-                            st.info(f"推送诊断报告: {push_msg}")
-                            
-                            with st.expander("查看 AI 生成的初始测试方案", expanded=True):
-                                st.write(ai_advice)
-                        else:
-                            st.error("❌ 数据库保存失败：无法获取返回记录，请检查 Supabase 权限。")
-                    except Exception as e:
-                        st.error(f"❌ 数据库保存遭遇异常: {str(e)}")
+                if deposit > amount:
+                    st.error("❌ 录入错误：已付定金不能大于订单总金额！")
+                else:
+                    with st.spinner("正在生成方案并同步数据库，请稍候..."):
+                        ai_advice = get_gemini_testing_advice(sample_name, requirements)
+                        
+                        order_data = {
+                            "client_name": client_name, "contact_info": contact_info, "sample_name": sample_name,
+                            "arrival_date": str(arrival_date), "requirements": requirements, "ai_advice": ai_advice,
+                            "status": "Pending", "amount": amount, "deposit": deposit, "is_paid": False, 
+                            "has_test_list": False, "has_invoice": False, "creator_name": user["name"] 
+                        }
+                        try:
+                            res = supabase.table("orders").insert(order_data).execute()
+                            if res.data and len(res.data) > 0:
+                                inserted_id = res.data[0]['id']
+                                auto_order_no = f"YJ-{inserted_id:05d}"
+                                
+                                _, push_msg = send_new_order_notifications(auto_order_no, client_name, sample_name, requirements, ai_advice, amount, deposit, user["name"])
+                                
+                                st.success(f"✅ 订单创建成功！系统编号：**{auto_order_no}**")
+                                st.info(f"状态: {push_msg}")
+                                
+                                with st.expander("查看 AI 生成的初始测试方案", expanded=False):
+                                    st.write(ai_advice)
+                            else:
+                                st.error("❌ 数据库保存失败。")
+                        except Exception as e:
+                            st.error(f"❌ 异常: {str(e)}")
 
 # --- 模块 2：实验室检测看板 ---
 elif menu == "实验室检测看板":
@@ -238,7 +216,7 @@ elif menu == "实验室检测看板":
     can_update_lab = "update_lab" in user["actions"]
     
     if not can_update_lab:
-        st.info("💡 您的权限级别为【只读】。您无法更改检测状态或上传实验数据。")
+        st.info("💡 您的权限级别为【只读】。")
         
     try:
         response = supabase.table("orders").select("*").neq("status", "Completed").order("id", desc=True).execute()
@@ -267,7 +245,9 @@ elif menu == "实验室检测看板":
                     with col_a:
                         st.markdown(f"**🧾 {display_order_no}**")
                         st.markdown(f"**🧪 {order['sample_name']}**")
-                        st.caption(f"客户：{order['client_name']} | 金额: ¥{order.get('amount', 0)}")
+                        # 【更新】：实验室看板简单展示财务状态
+                        balance = order.get('amount', 0) - order.get('deposit', 0)
+                        st.caption(f"客户：{order['client_name']} | 总额: ¥{order.get('amount', 0)} (定金: ¥{order.get('deposit', 0)})")
                         st.caption(f"到样：{order.get('arrival_date', '未知')} | 接单员：**{order.get('creator_name', '未知')}**")
                     with col_b:
                         st.markdown("**测试要求：**")
@@ -325,13 +305,19 @@ elif menu == "财务核对中心":
         for o in all_orders:
             creator = o.get('creator_name') or '系统历史单'
             amt = o.get('amount', 0) or 0
+            dep = o.get('deposit', 0) or 0
+            
             if creator not in sales_stats:
                 sales_stats[creator] = {"count": 0, "total_amt": 0, "collected_amt": 0}
             
             sales_stats[creator]["count"] += 1
             sales_stats[creator]["total_amt"] += amt
+            
+            # 业绩中已收账款的逻辑：如果已收全款(is_paid为真)，则为总金额；否则为已付定金
             if o.get('is_paid'):
                 sales_stats[creator]["collected_amt"] += amt
+            else:
+                sales_stats[creator]["collected_amt"] += dep
                 
         if sales_stats:
             stats_list = []
@@ -340,8 +326,8 @@ elif menu == "财务核对中心":
                     "接单员姓名": k,
                     "接单数量": v["count"],
                     "创造总业绩 (元)": f"¥ {v['total_amt']:,.2f}",
-                    "已收账款 (元)": f"¥ {v['collected_amt']:,.2f}",
-                    "待收账款 (元)": f"¥ {v['total_amt'] - v['collected_amt']:,.2f}"
+                    "已收账款 (包含定金)": f"¥ {v['collected_amt']:,.2f}",
+                    "待收尾款总计": f"¥ {v['total_amt'] - v['collected_amt']:,.2f}"
                 })
             st.dataframe(stats_list, use_container_width=True)
         else:
@@ -351,13 +337,14 @@ elif menu == "财务核对中心":
 
         st.subheader("🏢 公司总体财务概况")
         total_revenue = sum(o.get('amount', 0) or 0 for o in all_orders)
-        collected_revenue = sum(o.get('amount', 0) or 0 for o in all_orders if o.get('is_paid'))
+        # 公司总收款 = 所有已结清的订单总额 + 所有未结清订单的定金总额
+        collected_revenue = sum(o.get('amount', 0) if o.get('is_paid') else o.get('deposit', 0) for o in all_orders)
         uncollected_revenue = total_revenue - collected_revenue
         
         col1, col2, col3 = st.columns(3)
         col1.metric("📊 累计订单总额", f"¥ {total_revenue:,.2f}")
-        col2.metric("✅ 已收账款", f"¥ {collected_revenue:,.2f}")
-        col3.metric("⏳ 待收账款", f"¥ {uncollected_revenue:,.2f}")
+        col2.metric("✅ 已收账款总额 (含定金)", f"¥ {collected_revenue:,.2f}")
+        col3.metric("⏳ 待收尾款总额", f"¥ {uncollected_revenue:,.2f}")
         
         st.divider()
         st.write("### 待结算 / 已完工订单清单")
@@ -370,12 +357,16 @@ elif menu == "财务核对中心":
             for order in completed_orders:
                 with st.container(border=True):
                     display_order_no = f"YJ-{order['id']:05d}"
+                    balance = order.get('amount', 0) - order.get('deposit', 0)
+                    
                     st.markdown(f"**订单号：{display_order_no}** | 客户：{order['client_name']} | 样品：{order['sample_name']} | 接单员：{order.get('creator_name', '未知')}")
-                    st.markdown(f"**订单金额：** <font color='red'>**¥ {order.get('amount', 0)}**</font>", unsafe_allow_html=True)
+                    # 【更新】：在财务单显示详细的金额组成
+                    st.markdown(f"**订单总计：** ¥ {order.get('amount', 0)} | **已付定金：** ¥ {order.get('deposit', 0)} | **待收尾款：** <font color='red'>**¥ {balance}**</font>", unsafe_allow_html=True)
                     
                     c1, c2, c3 = st.columns(3)
                     with c1:
-                        new_is_paid = st.checkbox("✅ 确认已收款", value=order.get('is_paid', False), key=f"paid_{order['id']}", disabled=not can_update_finance)
+                        # 如果勾选此项，代表尾款已经结清
+                        new_is_paid = st.checkbox("✅ 确认已收全款 (结清尾款)", value=order.get('is_paid', False), key=f"paid_{order['id']}", disabled=not can_update_finance)
                     with c2:
                         new_has_test_list = st.checkbox("📑 已开测试清单", value=order.get('has_test_list', False), key=f"testlist_{order['id']}", disabled=not can_update_finance)
                     with c3:
