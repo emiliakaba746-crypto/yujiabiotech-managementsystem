@@ -14,8 +14,9 @@ st.set_page_config(page_title="玉佳生物订单系统", layout="wide")
 GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
-WXPUSHER_UID = st.secrets["WXPUSHER_UID"]
-WXPUSHER_APP_TOKEN = st.secrets["WXPUSHER_APP_TOKEN"]
+WXPUSHER_UID = st.secrets.get("WXPUSHER_UID", "")
+WXPUSHER_APP_TOKEN = st.secrets.get("WXPUSHER_APP_TOKEN", "")
+WECHAT_WEBHOOK = st.secrets.get("WECHAT_WEBHOOK", "") # 新增读取企业微信Webhook
 
 genai.configure(api_key=GEMINI_API_KEY)
 
@@ -34,14 +35,14 @@ USERS = {
     "2502": {"name": "汪孝亮", "menus": ["业务接单大厅", "实验室检测看板", "财务核对中心"], "actions": ["update_lab"]},
     "2601": {"name": "周海迪", "menus": ["业务接单大厅", "实验室检测看板", "财务核对中心"], "actions": ["create_order"]},
     "2602": {"name": "吴班坤", "menus": ["实验室检测看板"], "actions": ["update_lab"]},
-    "2603": {"name": "林伟雄", "menus": ["业务接单大厅", "实验室检测看板", "财务核对中心"], "actions": ["create_order"]}
+    "2603": {"name": "林伟雄", "menus": ["业务接单大厅", "实验室检测看板", "财务核追求中心"], "actions": ["create_order"]}
 }
 
 if "current_user" not in st.session_state:
     st.session_state.current_user = None
 
 # ==========================================
-# 3. 登录拦截页面 (改为下拉选择员工)
+# 3. 登录拦截页面
 # ==========================================
 if st.session_state.current_user is None:
     st.title("🔒 欢迎登录玉佳生物订单管理系统")
@@ -51,14 +52,11 @@ if st.session_state.current_user is None:
     with col2:
         with st.container(border=True):
             st.subheader("👨‍💻 员工登录")
-            
-            # 【升级核心点】: 使用 selectbox 替代 text_input，并用 format_func 美化显示
             emp_id = st.selectbox(
                 "请选择员工账号:", 
                 options=list(USERS.keys()), 
                 format_func=lambda x: f"{USERS[x]['name']} (工号: {x})"
             )
-            
             password = st.text_input("密码 (Password):", type="password", placeholder="首次登录输入的内容将自动设为永久密码")
             
             if st.button("登 录", type="primary", use_container_width=True):
@@ -111,15 +109,61 @@ def get_gemini_testing_advice(sample_name, requirements):
     except Exception as e:
         return f"AI 建议生成失败：{str(e)}"
 
-def send_wxpusher_message(client, sample, requirements, advice, amount, creator):
-    url = "https://wxpusher.zjiecode.com/api/send/message"
-    content = f"🔔 **【新样品到达】**\n**接单员：** {creator}\n**客户：** {client}\n**样品：** {sample}\n**金额：** ¥{amount}\n**要求：** {requirements}\n---\n🤖 **【AI 测试方案建议】**\n{advice}"
-    payload = {"appToken": WXPUSHER_APP_TOKEN, "content": content, "summary": f"新接单: {sample}", "contentType": 3, "uids": [uid.strip() for uid in WXPUSHER_UID.split(",")]}
-    try:
-        response = requests.post(url, json=payload)
-        return response.json().get("code") == 1000, response.json().get("msg")
-    except Exception as e:
-        return False, str(e)
+# 【核心修改点】: 封装双通道推送函数
+def send_new_order_notifications(order_no, client, sample, requirements, advice, amount, creator):
+    # 构建兼容双平台的 Markdown 消息模板
+    content = f"""🔔 **【新样品到达】**
+> **订单编号：** <font color="info">{order_no}</font>
+> **接单员：** {creator}
+> **客户：** {client}
+> **样品：** {sample}
+> **金额：** <font color="warning">¥{amount}</font>
+> **要求：** {requirements}
+
+---
+🤖 **【AI 测试方案建议】**
+<font color="comment">{advice}</font>
+"""
+    results = []
+
+    # 1. 路径 A: 推送到 WxPusher (个人微信)
+    if WXPUSHER_APP_TOKEN and WXPUSHER_UID:
+        wx_url = "https://wxpusher.zjiecode.com/api/send/message"
+        payload_wx = {
+            "appToken": WXPUSHER_APP_TOKEN,
+            "content": content,
+            "summary": f"新接单: {order_no}",
+            "contentType": 3,
+            "uids": [uid.strip() for uid in WXPUSHER_UID.split(",") if uid.strip()]
+        }
+        try:
+            res_wx = requests.post(wx_url, json=payload_wx)
+            if res_wx.json().get("code") == 1000:
+                results.append("WxPusher发送成功")
+            else:
+                results.append(f"WxPusher失败")
+        except:
+            results.append("WxPusher网络错误")
+
+    # 2. 路径 B: 推送到企业微信工作群
+    if WECHAT_WEBHOOK:
+        payload_wecom = {
+            "msgtype": "markdown",
+            "markdown": {
+                "content": content
+            }
+        }
+        headers = {'Content-Type': 'application/json'}
+        try:
+            res_wecom = requests.post(WECHAT_WEBHOOK, json=payload_wecom, headers=headers)
+            if res_wecom.status_code == 200:
+                results.append("企业微信发送成功")
+            else:
+                results.append(f"企业微信失败")
+        except:
+            results.append("企业微信网络错误")
+
+    return True, " | ".join(results)
 
 # ==========================================
 # 5. Streamlit 界面路由与侧边栏
@@ -148,7 +192,7 @@ if menu == "业务接单大厅":
                 contact_info = st.text_input("联系方式 (手机/微信)")
                 amount = st.number_input("订单金额 (元)", min_value=0.0, value=0.0, step=100.0) 
             with col2:
-                sample_name = st.text_input("样品名称")
+                sample_name = st.text_input("样品名称 (系统将自动生成订单编号)")
                 arrival_date = st.date_input("到样日期")
                 
             requirements = st.text_area("详细测试要求")
@@ -165,12 +209,16 @@ if menu == "业务接单大厅":
                         "creator_name": user["name"] 
                     }
                     try:
-                        supabase.table("orders").insert(order_data).execute()
-                        wx_success, wx_msg = send_wxpusher_message(client_name, sample_name, requirements, ai_advice, amount, user["name"])
-                        if wx_success:
-                            st.success("✅ 订单创建成功！数据已入库，并已成功推送到微信。")
-                        else:
-                            st.warning(f"⚠️ 订单已入库，但微信推送失败。WxPusher提示：{wx_msg}")
+                        res = supabase.table("orders").insert(order_data).execute()
+                        inserted_id = res.data[0]['id']
+                        auto_order_no = f"YJ-{inserted_id:05d}"
+                        
+                        # 调用双通道推送
+                        _, push_msg = send_new_order_notifications(auto_order_no, client_name, sample_name, requirements, ai_advice, amount, user["name"])
+                        
+                        st.success(f"✅ 订单创建成功！系统已为您自动分配编号：**{auto_order_no}**。")
+                        st.caption(f"推送状态: {push_msg}")
+                        
                         with st.expander("查看 AI 生成的初始测试方案", expanded=True):
                             st.write(ai_advice)
                     except Exception as e:
@@ -206,7 +254,10 @@ elif menu == "实验室检测看板":
                     return
                 with st.container(border=True):
                     col_a, col_b, col_c = st.columns([2.5, 4, 2])
+                    display_order_no = f"YJ-{order['id']:05d}"
+                    
                     with col_a:
+                        st.markdown(f"**🧾 {display_order_no}**")
                         st.markdown(f"**🧪 {order['sample_name']}**")
                         st.caption(f"客户：{order['client_name']} | 金额: ¥{order.get('amount', 0)}")
                         st.caption(f"到样：{order.get('arrival_date', '未知')} | 接单员：**{order.get('creator_name', '未知')}**")
@@ -261,7 +312,6 @@ elif menu == "财务核对中心":
         response = supabase.table("orders").select("*").order("id", desc=True).execute()
         all_orders = response.data
         
-        # --- 🏆 团队接单业绩统计看板 ---
         st.subheader("🏆 团队接单业绩统计")
         sales_stats = {}
         for o in all_orders:
@@ -291,7 +341,6 @@ elif menu == "财务核对中心":
             
         st.divider()
 
-        # --- 总体财务数据 ---
         st.subheader("🏢 公司总体财务概况")
         total_revenue = sum(o.get('amount', 0) or 0 for o in all_orders)
         collected_revenue = sum(o.get('amount', 0) or 0 for o in all_orders if o.get('is_paid'))
@@ -312,7 +361,8 @@ elif menu == "财务核对中心":
         else:
             for order in completed_orders:
                 with st.container(border=True):
-                    st.markdown(f"**订单号：YJ-2026-{order['id']}** | 客户：{order['client_name']} | 样品：{order['sample_name']} | 接单员：{order.get('creator_name', '未知')}")
+                    display_order_no = f"YJ-{order['id']:05d}"
+                    st.markdown(f"**订单号：{display_order_no}** | 客户：{order['client_name']} | 样品：{order['sample_name']} | 接单员：{order.get('creator_name', '未知')}")
                     st.markdown(f"**订单金额：** <font color='red'>**¥ {order.get('amount', 0)}**</font>", unsafe_allow_html=True)
                     
                     c1, c2, c3 = st.columns(3)
