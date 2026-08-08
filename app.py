@@ -5,7 +5,7 @@ from supabase import create_client, Client
 import csv              
 import io               
 from datetime import datetime 
-import pandas as pd     # 【新增】用于强大的数据分析与图表生成
+import pandas as pd     
 
 # ==========================================
 # 0. 页面基础配置 (必须放在第一行)
@@ -31,7 +31,6 @@ supabase: Client = init_supabase()
 # ==========================================
 # 2. 员工账号与权限配置中心
 # ==========================================
-# 【修改点】：给所有人分配了新的 "数据统计看板" 菜单
 USERS = {
     "2500": {"name": "Kevin", "menus": ["业务接单大厅", "实验室检测看板", "财务核对中心", "数据统计看板"], "actions": ["create_order", "update_lab", "update_finance"]},
     "2501": {"name": "周翠莹", "menus": ["业务接单大厅", "实验室检测看板", "财务核对中心", "数据统计看板"], "actions": ["create_order", "update_finance"]},
@@ -111,7 +110,6 @@ def get_gemini_testing_advice(sample_name, requirements):
     except Exception as e:
         return f"AI 建议生成因网络或限流已跳过。"
 
-# 【修改点】：推送加入测试类型
 def send_new_order_notifications(order_no, client, sample, test_type, requirements, advice, amount, deposit, creator):
     balance = amount - deposit
     content = f"""🔔 **【新样品到达】**
@@ -170,7 +168,6 @@ if menu == "业务接单大厅":
                 deposit = st.number_input("💵 已付定金金额 (元)", min_value=0.0, value=0.0, step=100.0)
             with col2:
                 sample_name = st.text_input("样品名称 (系统将自动生成订单编号)")
-                # 【新增】：测试类型下拉框
                 test_type = st.selectbox("🎯 测试类型", ["ICP-MS", "TOC", "温室气体", "氨基酸", "其他"])
                 arrival_date = st.date_input("到样日期")
                 
@@ -223,7 +220,6 @@ if menu == "业务接单大厅":
                     with st.spinner("正在生成方案并同步数据库，请稍候..."):
                         ai_advice = get_gemini_testing_advice(sample_name, requirements)
                         
-                        # 【修改点】：保存新增的 test_type
                         order_data = {
                             "client_name": client_name, "contact_info": contact_info, "sample_name": sample_name,
                             "test_type": test_type, "arrival_date": str(arrival_date), "requirements": requirements, 
@@ -420,11 +416,15 @@ elif menu == "数据统计看板":
             df['arrival_date'] = pd.to_datetime(df['arrival_date'], errors='coerce')
             df['month'] = df['arrival_date'].dt.strftime('%Y-%m')
             
-            # 数据清洗：格式化金额和类型
+            # 数据清洗：格式化金额、类型和接单员
             df['amount'] = pd.to_numeric(df['amount'], errors='coerce').fillna(0)
             if 'test_type' not in df.columns:
                 df['test_type'] = '其他'
             df['test_type'] = df['test_type'].fillna('其他')
+            
+            if 'creator_name' not in df.columns:
+                df['creator_name'] = '未知'
+            df['creator_name'] = df['creator_name'].fillna('未知')
             
             # 过滤掉没有日期的数据
             df = df.dropna(subset=['month']).sort_values('month')
@@ -471,6 +471,30 @@ elif menu == "数据统计看板":
                     client_pivot[col] = client_pivot[col].apply(lambda x: f"¥ {x:,.2f}")
             
             st.dataframe(client_pivot, use_container_width=True)
+            
+            st.divider()
+            
+            # ----------------------------------------
+            # 图表 4：各个月不同接单员的营业额明细 (核心新增)
+            # ----------------------------------------
+            st.subheader("👨‍💼 4. 每月各【接单员】业绩明细")
+            st.write("下方柱状图与表格展示了各位接单员在不同月份创造的业绩总额：")
+            
+            # 生成柱状对比图
+            creator_chart_pivot = df.pivot_table(index='month', columns='creator_name', values='amount', aggfunc='sum', fill_value=0)
+            st.bar_chart(creator_chart_pivot)
+            
+            # 生成详细表格并排名
+            creator_table = df.pivot_table(index='creator_name', columns='month', values='amount', aggfunc='sum', fill_value=0)
+            creator_table['累计总业绩'] = creator_table.sum(axis=1)
+            creator_table = creator_table.sort_values('累计总业绩', ascending=False).reset_index()
+            creator_table.rename(columns={'creator_name': '接单员姓名'}, inplace=True)
+            
+            for col in creator_table.columns:
+                if col != '接单员姓名':
+                    creator_table[col] = creator_table[col].apply(lambda x: f"¥ {x:,.2f}")
+                    
+            st.dataframe(creator_table, use_container_width=True)
             
     except Exception as e:
         st.error(f"加载统计数据失败，请确保您已在 requirements.txt 中安装 pandas。错误信息: {str(e)}")
