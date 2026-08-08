@@ -16,7 +16,7 @@ SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 WXPUSHER_UID = st.secrets.get("WXPUSHER_UID", "")
 WXPUSHER_APP_TOKEN = st.secrets.get("WXPUSHER_APP_TOKEN", "")
-WECHAT_WEBHOOK = st.secrets.get("WECHAT_WEBHOOK", "") # 新增读取企业微信Webhook
+WECHAT_WEBHOOK = st.secrets.get("WECHAT_WEBHOOK", "") 
 
 genai.configure(api_key=GEMINI_API_KEY)
 
@@ -35,7 +35,7 @@ USERS = {
     "2502": {"name": "汪孝亮", "menus": ["业务接单大厅", "实验室检测看板", "财务核对中心"], "actions": ["update_lab"]},
     "2601": {"name": "周海迪", "menus": ["业务接单大厅", "实验室检测看板", "财务核对中心"], "actions": ["create_order"]},
     "2602": {"name": "吴班坤", "menus": ["实验室检测看板"], "actions": ["update_lab"]},
-    "2603": {"name": "林伟雄", "menus": ["业务接单大厅", "实验室检测看板", "财务核追求中心"], "actions": ["create_order"]}
+    "2603": {"name": "林伟雄", "menus": ["业务接单大厅", "实验室检测看板", "财务核对中心"], "actions": ["create_order"]}
 }
 
 if "current_user" not in st.session_state:
@@ -109,9 +109,7 @@ def get_gemini_testing_advice(sample_name, requirements):
     except Exception as e:
         return f"AI 建议生成失败：{str(e)}"
 
-# 【核心修改点】: 封装双通道推送函数
 def send_new_order_notifications(order_no, client, sample, requirements, advice, amount, creator):
-    # 构建兼容双平台的 Markdown 消息模板
     content = f"""🔔 **【新样品到达】**
 > **订单编号：** <font color="info">{order_no}</font>
 > **接单员：** {creator}
@@ -126,7 +124,7 @@ def send_new_order_notifications(order_no, client, sample, requirements, advice,
 """
     results = []
 
-    # 1. 路径 A: 推送到 WxPusher (个人微信)
+    # 1. 路径 A: 推送到 WxPusher
     if WXPUSHER_APP_TOKEN and WXPUSHER_UID:
         wx_url = "https://wxpusher.zjiecode.com/api/send/message"
         payload_wx = {
@@ -139,13 +137,15 @@ def send_new_order_notifications(order_no, client, sample, requirements, advice,
         try:
             res_wx = requests.post(wx_url, json=payload_wx)
             if res_wx.json().get("code") == 1000:
-                results.append("WxPusher发送成功")
+                results.append("✅ 个人微信成功")
             else:
-                results.append(f"WxPusher失败")
+                results.append(f"❌ 个人微信失败")
         except:
-            results.append("WxPusher网络错误")
+            results.append("❌ 个人微信网络错误")
+    else:
+        results.append("⚠️ WxPusher未配置")
 
-    # 2. 路径 B: 推送到企业微信工作群
+    # 2. 路径 B: 推送到企业微信
     if WECHAT_WEBHOOK:
         payload_wecom = {
             "msgtype": "markdown",
@@ -157,11 +157,13 @@ def send_new_order_notifications(order_no, client, sample, requirements, advice,
         try:
             res_wecom = requests.post(WECHAT_WEBHOOK, json=payload_wecom, headers=headers)
             if res_wecom.status_code == 200:
-                results.append("企业微信发送成功")
+                results.append("✅ 企微群成功")
             else:
-                results.append(f"企业微信失败")
-        except:
-            results.append("企业微信网络错误")
+                results.append(f"❌ 企微群失败(错误码:{res_wecom.status_code})")
+        except Exception as e:
+            results.append(f"❌ 企微网络错误: {str(e)}")
+    else:
+        results.append("⚠️ 企业微信Webhook未配置 (请检查 Streamlit Secrets)")
 
     return True, " | ".join(results)
 
@@ -213,11 +215,11 @@ if menu == "业务接单大厅":
                         inserted_id = res.data[0]['id']
                         auto_order_no = f"YJ-{inserted_id:05d}"
                         
-                        # 调用双通道推送
                         _, push_msg = send_new_order_notifications(auto_order_no, client_name, sample_name, requirements, ai_advice, amount, user["name"])
                         
-                        st.success(f"✅ 订单创建成功！系统已为您自动分配编号：**{auto_order_no}**。")
-                        st.caption(f"推送状态: {push_msg}")
+                        st.success(f"✅ 订单创建成功！编号：**{auto_order_no}**")
+                        # 将推送结果用显著的信息框展示出来，方便查错
+                        st.info(f"推送诊断报告: {push_msg}")
                         
                         with st.expander("查看 AI 生成的初始测试方案", expanded=True):
                             st.write(ai_advice)
