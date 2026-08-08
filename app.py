@@ -28,7 +28,6 @@ supabase: Client = init_supabase()
 # ==========================================
 # 2. 员工账号与权限配置中心
 # ==========================================
-# 已移除固定密码，改为数据库验证
 USERS = {
     "2500": {"name": "Kevin", "menus": ["业务接单大厅", "实验室检测看板", "财务核对中心"], "actions": ["create_order", "update_lab", "update_finance"]},
     "2501": {"name": "周翠莹", "menus": ["业务接单大厅", "实验室检测看板", "财务核对中心"], "actions": ["create_order", "update_finance"]},
@@ -42,7 +41,7 @@ if "current_user" not in st.session_state:
     st.session_state.current_user = None
 
 # ==========================================
-# 3. 登录拦截页面 (带首次登录密码设置逻辑)
+# 3. 登录拦截页面 (改为下拉选择员工)
 # ==========================================
 if st.session_state.current_user is None:
     st.title("🔒 欢迎登录玉佳生物订单管理系统")
@@ -52,17 +51,22 @@ if st.session_state.current_user is None:
     with col2:
         with st.container(border=True):
             st.subheader("👨‍💻 员工登录")
-            emp_id = st.text_input("工号 (ID):", placeholder="请输入4位工号")
+            
+            # 【升级核心点】: 使用 selectbox 替代 text_input，并用 format_func 美化显示
+            emp_id = st.selectbox(
+                "请选择员工账号:", 
+                options=list(USERS.keys()), 
+                format_func=lambda x: f"{USERS[x]['name']} (工号: {x})"
+            )
+            
             password = st.text_input("密码 (Password):", type="password", placeholder="首次登录输入的内容将自动设为永久密码")
             
             if st.button("登 录", type="primary", use_container_width=True):
                 if emp_id in USERS:
                     try:
-                        # 尝试从数据库查询该工号的密码
                         res = supabase.table("employees").select("*").eq("emp_id", emp_id).execute()
                         
                         if not res.data:
-                            # 数据库没有记录，触发【首次登录设置密码】逻辑
                             if len(password) < 4:
                                 st.warning("⚠️ 这是您的首次登录，请设置一个至少 4 位的密码！")
                             else:
@@ -71,7 +75,6 @@ if st.session_state.current_user is None:
                                 st.session_state.current_user = USERS[emp_id]
                                 st.rerun()
                         else:
-                            # 数据库有记录，校验密码
                             db_password = res.data[0]["password"]
                             if password == db_password:
                                 st.session_state.current_user = USERS[emp_id]
@@ -81,7 +84,7 @@ if st.session_state.current_user is None:
                     except Exception as e:
                         st.error(f"数据库连接异常，请确保 supabase 中已创建 employees 表: {str(e)}")
                 else:
-                    st.error("❌ 工号不存在，请检查后重新输入！")
+                    st.error("❌ 工号不存在，请检查系统配置！")
     st.stop()
 
 user = st.session_state.current_user
@@ -159,7 +162,7 @@ if menu == "业务接单大厅":
                         "client_name": client_name, "contact_info": contact_info, "sample_name": sample_name,
                         "arrival_date": str(arrival_date), "requirements": requirements, "ai_advice": ai_advice,
                         "status": "Pending", "amount": amount, "is_paid": False, "has_test_list": False, "has_invoice": False,
-                        "creator_name": user["name"]  # 记录接单员名字
+                        "creator_name": user["name"] 
                     }
                     try:
                         supabase.table("orders").insert(order_data).execute()
@@ -246,7 +249,7 @@ elif menu == "实验室检测看板":
     except Exception as e:
         st.error(f"加载失败: {str(e)}")
 
-# --- 模块 3：财务核对中心 (带业绩统计) ---
+# --- 模块 3：财务核对中心 ---
 elif menu == "财务核对中心":
     st.header("💰 账单与业绩看板")
     
