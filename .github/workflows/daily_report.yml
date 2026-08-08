@@ -4,17 +4,17 @@ on:
   schedule:
     # 每天早上 8:30 执行 (注意：GitHub Actions 使用 UTC 时间，北京时间 8:30 = UTC 0:30)
     - cron: '30 0 * * *'
-  workflow_dispatch: # 允许手动点击运行，方便测试
+  workflow_dispatch: # 允许手动点击运行，方便随时测试
 
 jobs:
   send-report:
     runs-on: ubuntu-latest
     steps:
       - name: 检出代码
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: 配置 Python 环境
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
@@ -27,6 +27,7 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          WXPUSHER_APP_TOKEN: ${{ secrets.WXPUSHER_APP_TOKEN }}
           WECHAT_WEBHOOK: ${{ secrets.WECHAT_WEBHOOK }}
         run: |
           python wechat_bot.py
