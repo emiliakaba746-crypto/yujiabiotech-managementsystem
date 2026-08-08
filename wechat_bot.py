@@ -17,23 +17,52 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 genai.configure(api_key=GEMINI_API_KEY)
 
 def summarize_with_gemini(sample_name, requirements, ai_advice):
-    """使用 Gemini 2.5 Flash 提取简述和注意事项"""
+    """使用 Gemini 提取简述和注意事项 (动态适配模型)"""
     try:
-        # 指定使用 gemini-2.5-flash 模型
-        model = genai.GenerativeModel('gemini-2.5-flash')
+        # 1. 自动探测当前 API Key 支持的模型列表
+        available_models = []
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                available_models.append(m.name)
+        
+        # 2. 智能选择最新可用模型
+        target_model_name = ""
+        preferred_models = [
+            'models/gemini-flash-latest', 
+            'models/gemini-3.6-flash',
+            'models/gemini-3.5-flash'
+        ]
+        
+        for pref in preferred_models:
+            if pref in available_models:
+                target_model_name = pref
+                break
+                
+        if not target_model_name and available_models:
+            target_model_name = available_models[-1]
+
+        if not target_model_name:
+            raise Exception("No available models found")
+
+        target_model_name = target_model_name.replace('models/', '')
+        
+        # 3. 发送请求
+        model = genai.GenerativeModel(target_model_name)
         prompt = f"""
         你是一个实验室主管。请根据以下信息，用极其简短的语言（限50字以内）总结检测方法和最关键的安全注意事项：
         样品：{sample_name}
         要求：{requirements}
         已有方案参考：{ai_advice}
         
-        格式要求：
+        格式要求（必须严格遵守以下格式，不要多余废话）：
         - 方法简述：xxx
         - 注意事项：xxx
         """
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
+        # 打印错误到后台日志方便排查
+        print(f"AI 生成失败: {e}")
         return f"- 方法简述：详见系统原方案\n- 注意事项：请遵循标准实验室规范"
 
 def send_daily_report():
@@ -52,6 +81,7 @@ def send_daily_report():
         
         # 2. 遍历订单，生成报告内容
         for order in orders:
+            print(f"正在处理样品: {order['sample_name']}")
             # 获取 AI 简述
             brief = summarize_with_gemini(order['sample_name'], order['requirements'], order.get('ai_advice', '无'))
             
