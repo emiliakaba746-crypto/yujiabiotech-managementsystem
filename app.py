@@ -2,9 +2,10 @@ import streamlit as st
 import requests
 import google.generativeai as genai
 from supabase import create_client, Client
-import csv              # 【新增】用于生成表格文件
-import io               # 【新增】用于在内存中处理文件流
-from datetime import datetime # 【新增】用于给下载的文件动态添加今天的日期
+import csv              
+import io               
+from datetime import datetime 
+import pandas as pd     # 【新增】用于强大的数据分析与图表生成
 
 # ==========================================
 # 0. 页面基础配置 (必须放在第一行)
@@ -30,13 +31,14 @@ supabase: Client = init_supabase()
 # ==========================================
 # 2. 员工账号与权限配置中心
 # ==========================================
+# 【修改点】：给所有人分配了新的 "数据统计看板" 菜单
 USERS = {
-    "2500": {"name": "Kevin", "menus": ["业务接单大厅", "实验室检测看板", "财务核对中心"], "actions": ["create_order", "update_lab", "update_finance"]},
-    "2501": {"name": "周翠莹", "menus": ["业务接单大厅", "实验室检测看板", "财务核对中心"], "actions": ["create_order", "update_finance"]},
-    "2502": {"name": "汪孝亮", "menus": ["业务接单大厅", "实验室检测看板", "财务核对中心"], "actions": ["update_lab"]},
-    "2601": {"name": "周海迪", "menus": ["业务接单大厅", "实验室检测看板", "财务核对中心"], "actions": ["create_order"]},
-    "2602": {"name": "吴班坤", "menus": ["实验室检测看板"], "actions": ["update_lab"]},
-    "2603": {"name": "林伟雄", "menus": ["业务接单大厅", "实验室检测看板", "财务核对中心"], "actions": ["create_order"]}
+    "2500": {"name": "Kevin", "menus": ["业务接单大厅", "实验室检测看板", "财务核对中心", "数据统计看板"], "actions": ["create_order", "update_lab", "update_finance"]},
+    "2501": {"name": "周翠莹", "menus": ["业务接单大厅", "实验室检测看板", "财务核对中心", "数据统计看板"], "actions": ["create_order", "update_finance"]},
+    "2502": {"name": "汪孝亮", "menus": ["业务接单大厅", "实验室检测看板", "财务核对中心", "数据统计看板"], "actions": ["update_lab"]},
+    "2601": {"name": "周海迪", "menus": ["业务接单大厅", "实验室检测看板", "财务核对中心", "数据统计看板"], "actions": ["create_order"]},
+    "2602": {"name": "吴班坤", "menus": ["实验室检测看板", "数据统计看板"], "actions": ["update_lab"]},
+    "2603": {"name": "林伟雄", "menus": ["业务接单大厅", "实验室检测看板", "财务核对中心", "数据统计看板"], "actions": ["create_order"]}
 }
 
 if "current_user" not in st.session_state:
@@ -109,13 +111,14 @@ def get_gemini_testing_advice(sample_name, requirements):
     except Exception as e:
         return f"AI 建议生成因网络或限流已跳过。"
 
-def send_new_order_notifications(order_no, client, sample, requirements, advice, amount, deposit, creator):
+# 【修改点】：推送加入测试类型
+def send_new_order_notifications(order_no, client, sample, test_type, requirements, advice, amount, deposit, creator):
     balance = amount - deposit
     content = f"""🔔 **【新样品到达】**
 > **订单编号：** <font color="info">{order_no}</font>
 > **接单员：** {creator}
 > **客户：** {client}
-> **样品：** {sample}
+> **样品：** {sample} (<font color="comment">{test_type}</font>)
 > **财务状态：** 订单总额 ¥{amount} (已付定金 ¥{deposit} | 待收尾款 <font color="warning">¥{balance}</font>)
 > **要求：** {requirements}
 
@@ -124,24 +127,17 @@ def send_new_order_notifications(order_no, client, sample, requirements, advice,
 <font color="comment">{advice}</font>
 """
     results = []
-    
     if WECHAT_WEBHOOK:
-        payload_wecom = {
-            "msgtype": "markdown",
-            "markdown": {"content": content}
-        }
+        payload_wecom = {"msgtype": "markdown", "markdown": {"content": content}}
         headers = {'Content-Type': 'application/json'}
         try:
             res_wecom = requests.post(WECHAT_WEBHOOK, json=payload_wecom, headers=headers, timeout=5)
-            if res_wecom.status_code == 200:
-                results.append("✅ 企业微信群通知已发送")
-            else:
-                results.append(f"❌ 企微群失败(码:{res_wecom.status_code})")
+            if res_wecom.status_code == 200: results.append("✅ 企业微信群通知已发送")
+            else: results.append(f"❌ 企微群失败(码:{res_wecom.status_code})")
         except Exception as e:
             results.append(f"❌ 企微网络超时")
     else:
         results.append("⚠️ 企业微信机器人未配置")
-
     return True, " | ".join(results)
 
 # ==========================================
@@ -174,6 +170,8 @@ if menu == "业务接单大厅":
                 deposit = st.number_input("💵 已付定金金额 (元)", min_value=0.0, value=0.0, step=100.0)
             with col2:
                 sample_name = st.text_input("样品名称 (系统将自动生成订单编号)")
+                # 【新增】：测试类型下拉框
+                test_type = st.selectbox("🎯 测试类型", ["ICP-MS", "TOC", "温室气体", "氨基酸", "其他"])
                 arrival_date = st.date_input("到样日期")
                 
             st.markdown("---")
@@ -212,12 +210,7 @@ if menu == "业务接单大厅":
 [ ] 仅需电子版 (PDF/Excel数据)
 [ ] 需要纸质盖章版（如CMA/CNAS资质报告）
 [ ] 中英双语报告
-特殊要求或备注： XXX（例如：“测试前请先超声清洗样品表面”、“如果A元素超标，则停止后续B元素的测试”等）
-
-💡 核心字段补充说明：
-样品成分预估：很多测试仪器（如ICP-MS、质谱仪）对进样基质有严格要求，如果样品中含有高盐、强酸或高浓度有机物，提前告知能避免损坏昂贵的测试仪器。
-样品危险性声明：这是所有正规实验室的强制要求，保护测试人员的人身安全。
-精度/检出限要求：同一种元素有不同的测试方法（比如测微量元素用ICP-MS，测常量元素用滴定或ICP-OES），明确您需要的精度能帮实验室匹配最经济、准确的仪器。"""
+特殊要求或备注： XXX（例如：“测试前请先超声清洗样品表面”、“如果A元素超标，则停止后续B元素的测试”等）"""
             
             requirements = st.text_area("详细测试要求 (请直接在下方模板修改/填写相应的 XXX 与 [ ])", value=req_template, height=450)
             
@@ -230,11 +223,12 @@ if menu == "业务接单大厅":
                     with st.spinner("正在生成方案并同步数据库，请稍候..."):
                         ai_advice = get_gemini_testing_advice(sample_name, requirements)
                         
+                        # 【修改点】：保存新增的 test_type
                         order_data = {
                             "client_name": client_name, "contact_info": contact_info, "sample_name": sample_name,
-                            "arrival_date": str(arrival_date), "requirements": requirements, "ai_advice": ai_advice,
-                            "status": "Pending", "amount": amount, "deposit": deposit, "is_paid": False, 
-                            "has_test_list": False, "has_invoice": False, "creator_name": user["name"] 
+                            "test_type": test_type, "arrival_date": str(arrival_date), "requirements": requirements, 
+                            "ai_advice": ai_advice, "status": "Pending", "amount": amount, "deposit": deposit, 
+                            "is_paid": False, "has_test_list": False, "has_invoice": False, "creator_name": user["name"] 
                         }
                         try:
                             res = supabase.table("orders").insert(order_data).execute()
@@ -242,7 +236,7 @@ if menu == "业务接单大厅":
                                 inserted_id = res.data[0]['id']
                                 auto_order_no = f"YJ-{inserted_id:05d}"
                                 
-                                _, push_msg = send_new_order_notifications(auto_order_no, client_name, sample_name, requirements, ai_advice, amount, deposit, user["name"])
+                                _, push_msg = send_new_order_notifications(auto_order_no, client_name, sample_name, test_type, requirements, ai_advice, amount, deposit, user["name"])
                                 
                                 st.success(f"✅ 订单创建成功！系统编号：**{auto_order_no}**")
                                 st.info(f"状态: {push_msg}")
@@ -285,10 +279,11 @@ elif menu == "实验室检测看板":
                 with st.container(border=True):
                     col_a, col_b, col_c = st.columns([2.5, 4, 2])
                     display_order_no = f"YJ-{order['id']:05d}"
+                    t_type = order.get('test_type', '其他')
                     
                     with col_a:
                         st.markdown(f"**🧾 {display_order_no}**")
-                        st.markdown(f"**🧪 {order['sample_name']}**")
+                        st.markdown(f"**🧪 {order['sample_name']}** (<font color='blue'>{t_type}</font>)", unsafe_allow_html=True)
                         balance = order.get('amount', 0) - order.get('deposit', 0)
                         st.caption(f"客户：{order['client_name']} | 总额: ¥{order.get('amount', 0)} (定金: ¥{order.get('deposit', 0)})")
                         st.caption(f"到样：{order.get('arrival_date', '未知')} | 接单员：**{order.get('creator_name', '未知')}**")
@@ -333,8 +328,7 @@ elif menu == "实验室检测看板":
 
 # --- 模块 3：财务核对中心 ---
 elif menu == "财务核对中心":
-    st.header("💰 账单与业绩看板")
-    
+    st.header("💰 账单明细与开票管理")
     can_update_finance = "update_finance" in user["actions"]
     if not can_update_finance:
         st.info("💡 您的权限级别为【只读】。您可以看到财务数据汇总，但无法勾选收款和单据状态。")
@@ -343,70 +337,19 @@ elif menu == "财务核对中心":
         response = supabase.table("orders").select("*").order("id", desc=True).execute()
         all_orders = response.data
         
-        st.subheader("🏆 团队接单业绩统计")
-        sales_stats = {}
-        for o in all_orders:
-            creator = o.get('creator_name') or '系统历史单'
-            amt = o.get('amount', 0) or 0
-            dep = o.get('deposit', 0) or 0
-            
-            if creator not in sales_stats:
-                sales_stats[creator] = {"count": 0, "total_amt": 0, "collected_amt": 0}
-            
-            sales_stats[creator]["count"] += 1
-            sales_stats[creator]["total_amt"] += amt
-            
-            if o.get('is_paid'):
-                sales_stats[creator]["collected_amt"] += amt
-            else:
-                sales_stats[creator]["collected_amt"] += dep
-                
-        if sales_stats:
-            stats_list = []
-            for k, v in sales_stats.items():
-                stats_list.append({
-                    "接单员姓名": k,
-                    "接单数量": v["count"],
-                    "创造总业绩 (元)": f"¥ {v['total_amt']:,.2f}",
-                    "已收账款 (包含定金)": f"¥ {v['collected_amt']:,.2f}",
-                    "待收尾款总计": f"¥ {v['total_amt'] - v['collected_amt']:,.2f}"
-                })
-            st.dataframe(stats_list, use_container_width=True)
-        else:
-            st.info("暂无业绩数据")
-            
-        st.divider()
-
-        st.subheader("🏢 公司总体财务概况")
-        total_revenue = sum(o.get('amount', 0) or 0 for o in all_orders)
-        collected_revenue = sum(o.get('amount', 0) if o.get('is_paid') else o.get('deposit', 0) for o in all_orders)
-        uncollected_revenue = total_revenue - collected_revenue
+        st.write("### 🧾 订单财务明细清单 (全部订单)")
         
-        col1, col2, col3 = st.columns(3)
-        col1.metric("📊 累计订单总额", f"¥ {total_revenue:,.2f}")
-        col2.metric("✅ 已收账款总额 (含定金)", f"¥ {collected_revenue:,.2f}")
-        col3.metric("⏳ 待收尾款总额", f"¥ {uncollected_revenue:,.2f}")
-        
-        st.divider()
-        
-        # 【核心新增】：财务列表与下载按钮并排布局
-        col_list_title, col_download = st.columns([3, 1])
-        with col_list_title:
-            st.write("### 🧾 订单财务明细清单 (全部订单)")
+        col_search, col_download = st.columns([3, 1])
+        with col_search:
+            fin_search = st.text_input("🔍 搜索客户名称快速定位...", key="fin_search")
             
         with col_download:
             if all_orders:
-                # 动态在内存中生成 CSV 文件，供用户点击下载
                 csv_buffer = io.StringIO()
                 csv_writer = csv.writer(csv_buffer)
-                
-                # 写入第一行：表头
-                csv_writer.writerow(['订单编号', '接单员', '到样日期', '客户名称', '样品名称', '订单总额(元)', '已付定金(元)', '待收尾款(元)', '已结清', '已开清单', '已开发票', '当前进度'])
-                
-                # 状态映射字典（将英文转为易读中文）
+                csv_writer.writerow(['订单编号', '接单员', '测试类型', '到样日期', '客户名称', '样品名称', '订单总额(元)', '已付定金(元)', '待收尾款(元)', '已结清', '已开清单', '已开发票', '当前进度'])
                 status_map = {"Pending": "待处理", "Processing": "检测中", "Completed": "已完工"}
                 
-                # 写入所有订单数据
                 for o in all_orders:
                     order_no_csv = f"YJ-{o['id']:05d}"
                     amt_csv = o.get('amount', 0) or 0
@@ -414,33 +357,17 @@ elif menu == "财务核对中心":
                     bal_csv = amt_csv - dep_csv
                     
                     csv_writer.writerow([
-                        order_no_csv,
-                        o.get('creator_name', '未知'),
-                        o.get('arrival_date', '未知'),
-                        o.get('client_name', '未知'),
-                        o.get('sample_name', '未知'),
-                        amt_csv,
-                        dep_csv,
-                        bal_csv,
-                        "是" if o.get('is_paid') else "否",
-                        "是" if o.get('has_test_list') else "否",
-                        "是" if o.get('has_invoice') else "否",
+                        order_no_csv, o.get('creator_name', '未知'), o.get('test_type', '其他'), o.get('arrival_date', '未知'),
+                        o.get('client_name', '未知'), o.get('sample_name', '未知'), amt_csv, dep_csv, bal_csv,
+                        "是" if o.get('is_paid') else "否", "是" if o.get('has_test_list') else "否", "是" if o.get('has_invoice') else "否",
                         status_map.get(o.get('status', ''), '未知')
                     ])
                 
-                # 采用 utf-8-sig 编码：强制包含 BOM 头，这是防止 Excel 打开中文乱码的关键秘诀！
                 csv_bytes = csv_buffer.getvalue().encode('utf-8-sig')
-                
-                # 放置带图标的下载按钮
                 st.download_button(
-                    label="📥 导出全部财务数据 (CSV)",
-                    data=csv_bytes,
-                    file_name=f"玉佳生物财务报表_{datetime.now().strftime('%Y%m%d')}.csv",
-                    mime="text/csv",
-                    use_container_width=True
+                    label="📥 导出全部财务数据 (CSV)", data=csv_bytes, file_name=f"玉佳生物财务明细_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv", use_container_width=True
                 )
-        
-        fin_search = st.text_input("🔍 搜索客户名称快速定位...", key="fin_search")
         
         filtered_orders = all_orders
         if fin_search:
@@ -455,8 +382,9 @@ elif menu == "财务核对中心":
                     display_order_no = f"YJ-{order['id']:05d}"
                     balance = order.get('amount', 0) - order.get('deposit', 0)
                     current_status = status_map_ui.get(order.get('status', ''), "未知")
+                    t_type = order.get('test_type', '其他')
                     
-                    st.markdown(f"**订单号：{display_order_no}** | 客户：{order['client_name']} | 样品：{order['sample_name']} | 接单员：{order.get('creator_name', '未知')} | 进度：**{current_status}**")
+                    st.markdown(f"**订单号：{display_order_no}** | 客户：{order['client_name']} | 样品：{order['sample_name']} ({t_type}) | 接单员：{order.get('creator_name', '未知')} | 进度：**{current_status}**")
                     st.markdown(f"**订单总计：** ¥ {order.get('amount', 0)} | **已付定金：** ¥ {order.get('deposit', 0)} | **待收尾款：** <font color='red'>**¥ {balance}**</font>", unsafe_allow_html=True)
                     
                     c1, c2, c3 = st.columns(3)
@@ -474,3 +402,75 @@ elif menu == "财务核对中心":
                             
     except Exception as e:
         st.error(f"加载数据失败: {str(e)}")
+
+# --- 模块 4：数据统计看板 (全新核心功能) ---
+elif menu == "数据统计看板":
+    st.header("📈 数据统计与业务分析")
+    try:
+        response = supabase.table("orders").select("*").execute()
+        all_orders = response.data
+        
+        if not all_orders:
+            st.info("暂无订单数据可用于统计分析。")
+        else:
+            # 使用 Pandas 进行数据整理
+            df = pd.DataFrame(all_orders)
+            
+            # 数据清洗：格式化时间为 YYYY-MM
+            df['arrival_date'] = pd.to_datetime(df['arrival_date'], errors='coerce')
+            df['month'] = df['arrival_date'].dt.strftime('%Y-%m')
+            
+            # 数据清洗：格式化金额和类型
+            df['amount'] = pd.to_numeric(df['amount'], errors='coerce').fillna(0)
+            if 'test_type' not in df.columns:
+                df['test_type'] = '其他'
+            df['test_type'] = df['test_type'].fillna('其他')
+            
+            # 过滤掉没有日期的数据
+            df = df.dropna(subset=['month']).sort_values('month')
+            
+            # ----------------------------------------
+            # 图表 1：各个月份接单金额概况
+            # ----------------------------------------
+            st.subheader("📊 1. 每月营业总额趋势")
+            monthly_total = df.groupby('month')['amount'].sum().reset_index()
+            monthly_total.columns = ['月份', '营业额 (元)']
+            st.bar_chart(monthly_total.set_index('月份'))
+            
+            st.divider()
+            
+            # ----------------------------------------
+            # 图表 2：各个月不同测试类型金额
+            # ----------------------------------------
+            st.subheader("🎯 2. 每月各【测试类型】营业额分布")
+            # 制作数据透视表
+            type_pivot = df.pivot_table(index='month', columns='test_type', values='amount', aggfunc='sum', fill_value=0)
+            st.bar_chart(type_pivot)
+            
+            st.divider()
+            
+            # ----------------------------------------
+            # 图表 3：各个月各个单位的消费金额明细
+            # ----------------------------------------
+            st.subheader("🏢 3. 核心大客户消费能力明细")
+            st.write("下方表格展示了各单位在不同月份的消费总额，并按累计总消费金额从高到低排列：")
+            
+            client_pivot = df.pivot_table(index='client_name', columns='month', values='amount', aggfunc='sum', fill_value=0)
+            
+            # 计算每个客户的总消费并降序排序
+            client_pivot['累计总消费'] = client_pivot.sum(axis=1)
+            client_pivot = client_pivot.sort_values('累计总消费', ascending=False)
+            
+            # 整理表头格式以便显示
+            client_pivot = client_pivot.reset_index()
+            client_pivot.rename(columns={'client_name': '客户 / 单位名称'}, inplace=True)
+            
+            # 将金额格式化为带人民币符号和千分位的形式
+            for col in client_pivot.columns:
+                if col != '客户 / 单位名称':
+                    client_pivot[col] = client_pivot[col].apply(lambda x: f"¥ {x:,.2f}")
+            
+            st.dataframe(client_pivot, use_container_width=True)
+            
+    except Exception as e:
+        st.error(f"加载统计数据失败，请确保您已在 requirements.txt 中安装 pandas。错误信息: {str(e)}")
