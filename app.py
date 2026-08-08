@@ -2,6 +2,9 @@ import streamlit as st
 import requests
 import google.generativeai as genai
 from supabase import create_client, Client
+import csv              # 【新增】用于生成表格文件
+import io               # 【新增】用于在内存中处理文件流
+from datetime import datetime # 【新增】用于给下载的文件动态添加今天的日期
 
 # ==========================================
 # 0. 页面基础配置 (必须放在第一行)
@@ -386,8 +389,56 @@ elif menu == "财务核对中心":
         
         st.divider()
         
-        # 【修改点】：不再过滤完成状态，显示所有订单，并提供搜索功能
-        st.write("### 🧾 订单财务明细清单 (全部订单)")
+        # 【核心新增】：财务列表与下载按钮并排布局
+        col_list_title, col_download = st.columns([3, 1])
+        with col_list_title:
+            st.write("### 🧾 订单财务明细清单 (全部订单)")
+            
+        with col_download:
+            if all_orders:
+                # 动态在内存中生成 CSV 文件，供用户点击下载
+                csv_buffer = io.StringIO()
+                csv_writer = csv.writer(csv_buffer)
+                
+                # 写入第一行：表头
+                csv_writer.writerow(['订单编号', '接单员', '到样日期', '客户名称', '样品名称', '订单总额(元)', '已付定金(元)', '待收尾款(元)', '已结清', '已开清单', '已开发票', '当前进度'])
+                
+                # 状态映射字典（将英文转为易读中文）
+                status_map = {"Pending": "待处理", "Processing": "检测中", "Completed": "已完工"}
+                
+                # 写入所有订单数据
+                for o in all_orders:
+                    order_no_csv = f"YJ-{o['id']:05d}"
+                    amt_csv = o.get('amount', 0) or 0
+                    dep_csv = o.get('deposit', 0) or 0
+                    bal_csv = amt_csv - dep_csv
+                    
+                    csv_writer.writerow([
+                        order_no_csv,
+                        o.get('creator_name', '未知'),
+                        o.get('arrival_date', '未知'),
+                        o.get('client_name', '未知'),
+                        o.get('sample_name', '未知'),
+                        amt_csv,
+                        dep_csv,
+                        bal_csv,
+                        "是" if o.get('is_paid') else "否",
+                        "是" if o.get('has_test_list') else "否",
+                        "是" if o.get('has_invoice') else "否",
+                        status_map.get(o.get('status', ''), '未知')
+                    ])
+                
+                # 采用 utf-8-sig 编码：强制包含 BOM 头，这是防止 Excel 打开中文乱码的关键秘诀！
+                csv_bytes = csv_buffer.getvalue().encode('utf-8-sig')
+                
+                # 放置带图标的下载按钮
+                st.download_button(
+                    label="📥 导出全部财务数据 (CSV)",
+                    data=csv_bytes,
+                    file_name=f"玉佳生物财务报表_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
         
         fin_search = st.text_input("🔍 搜索客户名称快速定位...", key="fin_search")
         
@@ -398,12 +449,12 @@ elif menu == "财务核对中心":
         if not filtered_orders:
             st.info("暂无订单数据。")
         else:
-            status_map = {"Pending": "🟡 待处理", "Processing": "🔵 检测中", "Completed": "🟢 已完工"}
+            status_map_ui = {"Pending": "🟡 待处理", "Processing": "🔵 检测中", "Completed": "🟢 已完工"}
             for order in filtered_orders:
                 with st.container(border=True):
                     display_order_no = f"YJ-{order['id']:05d}"
                     balance = order.get('amount', 0) - order.get('deposit', 0)
-                    current_status = status_map.get(order.get('status', ''), "未知")
+                    current_status = status_map_ui.get(order.get('status', ''), "未知")
                     
                     st.markdown(f"**订单号：{display_order_no}** | 客户：{order['client_name']} | 样品：{order['sample_name']} | 接单员：{order.get('creator_name', '未知')} | 进度：**{current_status}**")
                     st.markdown(f"**订单总计：** ¥ {order.get('amount', 0)} | **已付定金：** ¥ {order.get('deposit', 0)} | **待收尾款：** <font color='red'>**¥ {balance}**</font>", unsafe_allow_html=True)
