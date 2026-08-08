@@ -62,7 +62,6 @@ if st.session_state.current_user is None:
             if st.button("登 录", type="primary", use_container_width=True):
                 if emp_id in USERS:
                     try:
-                        # 增加 Supabase 查询的超时保护，防止网络卡顿
                         res = supabase.table("employees").select("*").eq("emp_id", emp_id).execute()
                         
                         if not res.data:
@@ -89,10 +88,9 @@ if st.session_state.current_user is None:
 user = st.session_state.current_user
 
 # ==========================================
-# 4. 核心功能函数 (加入超时防护 Timeout)
+# 4. 核心功能函数
 # ==========================================
 def get_gemini_testing_advice(sample_name, requirements):
-    """【升级】加入 request_options 限制，防止 AI 服务器响应过慢卡死网页"""
     try:
         available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
         if not available_models: return "AI 建议生成失败：API Key 权限异常。"
@@ -107,14 +105,13 @@ def get_gemini_testing_advice(sample_name, requirements):
         model = genai.GenerativeModel(target_model_name)
         prompt = f"""作为玉佳生物科技的资深实验员，请根据以下信息提供建议：样品：{sample_name} 要求：{requirements}。请提供：1.测试方法 2.测试流程 3.保存条件。"""
         
-        # 强制 AI 最多响应 15 秒，否则跳过
+        # 强制 AI 最多响应 15 秒
         response = model.generate_content(prompt, request_options={"timeout": 15})
         return response.text
     except Exception as e:
         return f"AI 建议生成因网络或限流失败，已跳过。错误详情：{str(e)}"
 
 def send_new_order_notifications(order_no, client, sample, requirements, advice, amount, creator):
-    """【升级】加入 timeout=5 限制，防止微信服务器无响应导致卡死"""
     content = f"""🔔 **【新样品到达】**
 > **订单编号：** <font color="info">{order_no}</font>
 > **接单员：** {creator}
@@ -140,7 +137,8 @@ def send_new_order_notifications(order_no, client, sample, requirements, advice,
             "uids": [uid.strip() for uid in WXPUSHER_UID.split(",") if uid.strip()]
         }
         try:
-            res_wx = requests.post(wx_url, json=payload_wx, timeout=5) # 限制 5 秒超时
+            # 【修复点】: 将超时时间放宽至 15 秒，适应跨国网络波动
+            res_wx = requests.post(wx_url, json=payload_wx, timeout=15)
             if res_wx.json().get("code") == 1000:
                 results.append("✅ 个人微信成功")
             else:
@@ -160,7 +158,8 @@ def send_new_order_notifications(order_no, client, sample, requirements, advice,
         }
         headers = {'Content-Type': 'application/json'}
         try:
-            res_wecom = requests.post(WECHAT_WEBHOOK, json=payload_wecom, headers=headers, timeout=5) # 限制 5 秒超时
+            # 同样将企微超时时间放宽至 15 秒
+            res_wecom = requests.post(WECHAT_WEBHOOK, json=payload_wecom, headers=headers, timeout=15)
             if res_wecom.status_code == 200:
                 results.append("✅ 企微群成功")
             else:
@@ -206,11 +205,9 @@ if menu == "业务接单大厅":
             submitted = st.form_submit_button("生成订单 & 通知实验室")
             
             if submitted and client_name and sample_name:
-                with st.spinner("正在呼叫 AI 助手并同步数据库，请稍候 (最长预计 15 秒)..."):
-                    # 1. 尝试获取 AI 建议
+                with st.spinner("正在呼叫 AI 助手并同步数据库，请稍候..."):
                     ai_advice = get_gemini_testing_advice(sample_name, requirements)
                     
-                    # 2. 组织入库数据
                     order_data = {
                         "client_name": client_name, "contact_info": contact_info, "sample_name": sample_name,
                         "arrival_date": str(arrival_date), "requirements": requirements, "ai_advice": ai_advice,
@@ -218,13 +215,11 @@ if menu == "业务接单大厅":
                         "creator_name": user["name"] 
                     }
                     try:
-                        # 3. 存入数据库
                         res = supabase.table("orders").insert(order_data).execute()
                         if res.data and len(res.data) > 0:
                             inserted_id = res.data[0]['id']
                             auto_order_no = f"YJ-{inserted_id:05d}"
                             
-                            # 4. 推送消息
                             _, push_msg = send_new_order_notifications(auto_order_no, client_name, sample_name, requirements, ai_advice, amount, user["name"])
                             
                             st.success(f"✅ 订单创建成功！系统编号：**{auto_order_no}**")
