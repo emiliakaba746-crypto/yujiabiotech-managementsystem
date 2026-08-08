@@ -106,7 +106,6 @@ def get_gemini_testing_advice(sample_name, requirements):
     except Exception as e:
         return f"AI 建议生成因网络或限流已跳过。"
 
-# 【更新】：推送消息加入定金和尾款显示
 def send_new_order_notifications(order_no, client, sample, requirements, advice, amount, deposit, creator):
     balance = amount - deposit
     content = f"""🔔 **【新样品到达】**
@@ -167,7 +166,6 @@ if menu == "业务接单大厅":
             with col1:
                 client_name = st.text_input("客户名称 / 公司")
                 contact_info = st.text_input("联系方式 (手机/微信)")
-                # 【新增】：定金输入框
                 st.markdown("---")
                 amount = st.number_input("💰 订单总金额 (元)", min_value=0.0, value=0.0, step=100.0)
                 deposit = st.number_input("💵 已付定金金额 (元)", min_value=0.0, value=0.0, step=100.0)
@@ -176,7 +174,52 @@ if menu == "业务接单大厅":
                 arrival_date = st.date_input("到样日期")
                 
             st.markdown("---")
-            requirements = st.text_area("详细测试要求")
+            
+            # 【核心修改点】：定义规范的测试要求模板，并作为默认值注入文本框
+            req_template = """一、 样品基本信息
+样品名称： XXX（例如：水质样本、铝合金铸件、土壤）
+样品数量/体积/重量： X 个 / X ml / X g
+样品形态： XXX（例如：固体粉末、固体块状、水溶液、有机溶剂、气体）
+样品成分预估： XXX（简述主要基质或成分，如：含30%乙醇的水溶液、铁基合金。这有助于实验室选择合适的试剂）
+
+二、 核心测试需求
+测试项目/元素： XXX（例如：铅(Pb)、镉(Cd)含量测试；抗拉强度；表面形貌SEM观察）
+参考测试标准（可选）： XXX（例如：国标 GB/T XXXX-XXXX、美标 ASTM XXXX、或者“参照实验室常规方法”）
+精度/检出限要求： XXX（例如：精确到 0.01%、检出限需达到 ppm 级别、或者“常规精度即可”）
+
+三、 样品储存与安全属性（必填，关乎实验室安全）
+储存/运输条件：
+[ ] 常温
+[ ] 冷藏 (4℃)
+[ ] 冷冻 (-20℃)
+[ ] 避光保藏
+[ ] 干燥保藏
+[ ] 其他特殊要求：XXX
+样品危险性声明：
+[ ] 无危险性 (安全)
+[ ] 易燃 / 易爆
+[ ] 有毒 / 有腐蚀性
+[ ] 放射性 / 生物危害性
+备注：如果是危险品，请务必详细说明：XXX
+
+四、 测试后处理与其他备注
+检后样品处理：
+[ ] 实验室自行废弃销毁
+[ ] 寄回原址（邮费到付）
+测试报告要求：
+[ ] 仅需电子版 (PDF/Excel数据)
+[ ] 需要纸质盖章版（如CMA/CNAS资质报告）
+[ ] 中英双语报告
+特殊要求或备注： XXX（例如：“测试前请先超声清洗样品表面”、“如果A元素超标，则停止后续B元素的测试”等）
+
+💡 核心字段补充说明：
+样品成分预估：很多测试仪器（如ICP-MS、质谱仪）对进样基质有严格要求，如果样品中含有高盐、强酸或高浓度有机物，提前告知能避免损坏昂贵的测试仪器。
+样品危险性声明：这是所有正规实验室的强制要求，保护测试人员的人身安全。
+精度/检出限要求：同一种元素有不同的测试方法（比如测微量元素用ICP-MS，测常量元素用滴定或ICP-OES），明确您需要的精度能帮实验室匹配最经济、准确的仪器。"""
+            
+            # 使用 value 参数加载模板，调高 height 以适应长文本
+            requirements = st.text_area("详细测试要求 (请直接在下方模板修改/填写相应的 XXX 与 [ ])", value=req_template, height=450)
+            
             submitted = st.form_submit_button("生成订单 & 通知实验室")
             
             if submitted and client_name and sample_name:
@@ -245,12 +288,12 @@ elif menu == "实验室检测看板":
                     with col_a:
                         st.markdown(f"**🧾 {display_order_no}**")
                         st.markdown(f"**🧪 {order['sample_name']}**")
-                        # 【更新】：实验室看板简单展示财务状态
                         balance = order.get('amount', 0) - order.get('deposit', 0)
                         st.caption(f"客户：{order['client_name']} | 总额: ¥{order.get('amount', 0)} (定金: ¥{order.get('deposit', 0)})")
                         st.caption(f"到样：{order.get('arrival_date', '未知')} | 接单员：**{order.get('creator_name', '未知')}**")
                     with col_b:
                         st.markdown("**测试要求：**")
+                        # 因为模板文本可能较长，使用高度自适应的 info 框展示
                         st.info(order['requirements'])
                     with col_c:
                         status_opts = ["Pending", "Processing", "Completed"]
@@ -313,7 +356,6 @@ elif menu == "财务核对中心":
             sales_stats[creator]["count"] += 1
             sales_stats[creator]["total_amt"] += amt
             
-            # 业绩中已收账款的逻辑：如果已收全款(is_paid为真)，则为总金额；否则为已付定金
             if o.get('is_paid'):
                 sales_stats[creator]["collected_amt"] += amt
             else:
@@ -337,7 +379,6 @@ elif menu == "财务核对中心":
 
         st.subheader("🏢 公司总体财务概况")
         total_revenue = sum(o.get('amount', 0) or 0 for o in all_orders)
-        # 公司总收款 = 所有已结清的订单总额 + 所有未结清订单的定金总额
         collected_revenue = sum(o.get('amount', 0) if o.get('is_paid') else o.get('deposit', 0) for o in all_orders)
         uncollected_revenue = total_revenue - collected_revenue
         
@@ -360,12 +401,10 @@ elif menu == "财务核对中心":
                     balance = order.get('amount', 0) - order.get('deposit', 0)
                     
                     st.markdown(f"**订单号：{display_order_no}** | 客户：{order['client_name']} | 样品：{order['sample_name']} | 接单员：{order.get('creator_name', '未知')}")
-                    # 【更新】：在财务单显示详细的金额组成
                     st.markdown(f"**订单总计：** ¥ {order.get('amount', 0)} | **已付定金：** ¥ {order.get('deposit', 0)} | **待收尾款：** <font color='red'>**¥ {balance}**</font>", unsafe_allow_html=True)
                     
                     c1, c2, c3 = st.columns(3)
                     with c1:
-                        # 如果勾选此项，代表尾款已经结清
                         new_is_paid = st.checkbox("✅ 确认已收全款 (结清尾款)", value=order.get('is_paid', False), key=f"paid_{order['id']}", disabled=not can_update_finance)
                     with c2:
                         new_has_test_list = st.checkbox("📑 已开测试清单", value=order.get('has_test_list', False), key=f"testlist_{order['id']}", disabled=not can_update_finance)
